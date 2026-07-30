@@ -1,5 +1,15 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
+// ProGuard 7.2.2 (Compose 1.6.1) doesn't support Java 21 class files. Force 7.5.0.
+configurations.all {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "com.guardsquare" && requested.name.startsWith("proguard")) {
+            useVersion("7.5.0")
+            because("ProGuard 7.2.2 max is Java 18; Java 21 requires 7.5.0+")
+        }
+    }
+}
+
 plugins {
     kotlin("jvm") version "1.9.22"
     id("org.jetbrains.compose") version "1.6.1"

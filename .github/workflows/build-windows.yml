@@ -125,16 +125,16 @@ jobs:
           Write-Host "icon.ico created (sizes: $($sizes -join ', ')px)"
 
       - name: Build EXE (bundled JRE, x64)
-        run: gradle packageReleaseExe --no-daemon --stacktrace
+        run: gradle :packageReleaseExe --no-daemon --stacktrace
         shell: cmd
 
       - name: Build MSI
-        run: gradle packageReleaseMsi --no-daemon
+        run: gradle :packageReleaseMsi --no-daemon
         shell: cmd
         continue-on-error: true
 
       - name: Build Distributable (for MSIX)
-        run: gradle createReleaseDistributable --no-daemon
+        run: gradle :createReleaseDistributable --no-daemon
         shell: cmd
 
       - name: Package MSIX
