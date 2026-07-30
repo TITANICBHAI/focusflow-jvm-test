@@ -45,6 +45,13 @@ compose.desktop {
             "-Djava.nio.channels.spi.SelectorProvider=sun.nio.ch.PollSelectorProvider"
         )
 
+        buildTypes.release.proguard {
+            isEnabled.set(true)
+            optimize.set(true)
+            obfuscate.set(false)          // keep readable class names for crash logs
+            configurationFiles.from(project.file("proguard-rules.pro"))
+        }
+
         nativeDistributions {
             targetFormats(TargetFormat.Exe, TargetFormat.Msi)
 
@@ -59,8 +66,8 @@ compose.desktop {
                 "java.desktop",
                 "java.logging",
                 "java.management",
-                "java.naming",
-                "java.net.http",
+                // java.naming  — removed: no JNDI usage in source, sqlite-jdbc 3.47+ doesn't need it
+                // java.net.http — removed: no java.net.http.HttpClient usage in source
                 "java.sql",
                 "jdk.unsupported"
             )
@@ -79,6 +86,8 @@ compose.desktop {
 
 kotlin {
     jvmToolchain {
-        languageVersion.set(JavaLanguageVersion.of(19))
+        // Java 21 — current LTS (supported until Sept 2029).
+        // Java 19 was a short-term release; 21 is the right target.
+        languageVersion.set(JavaLanguageVersion.of(21))
     }
 }

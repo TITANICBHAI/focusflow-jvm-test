@@ -16,11 +16,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 19 (x64)
+      - name: Set up JDK 21 (x64)
         uses: actions/setup-java@v4
         with:
-          java-version: '19'
-          distribution: 'temurin'
+          java-version: '21'
+          distribution: 'temurin'    # Eclipse Temurin — free OpenJDK LTS build
           architecture: 'x64'
 
       - name: Setup Gradle
@@ -125,16 +125,16 @@ jobs:
           Write-Host "icon.ico created (sizes: $($sizes -join ', ')px)"
 
       - name: Build EXE (bundled JRE, x64)
-        run: gradle packageExe --no-daemon --stacktrace
+        run: gradle packageReleaseExe --no-daemon --stacktrace
         shell: cmd
 
       - name: Build MSI
-        run: gradle packageMsi --no-daemon
+        run: gradle packageReleaseMsi --no-daemon
         shell: cmd
         continue-on-error: true
 
       - name: Build Distributable (for MSIX)
-        run: gradle createDistributable --no-daemon
+        run: gradle createReleaseDistributable --no-daemon
         shell: cmd
 
       - name: Package MSIX
@@ -145,7 +145,7 @@ jobs:
           $version = $versionLine.Matches[0].Groups[1].Value
           Write-Host "Detected app version: $version"
 
-          $appDir    = "build\compose\binaries\main\app\FocusFlow"
+          $appDir    = "build\compose\binaries\main-release\app\FocusFlow"
           $msixStage = "build\msix-stage"
           $msixOut   = "build\FocusFlow-$version-x64.msix"
 
@@ -283,14 +283,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: FocusFlow-Windows-EXE
-          path: build/compose/binaries/main/exe/*.exe
+          path: build/compose/binaries/main-release/exe/*.exe
           retention-days: 30
 
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4
         with:
           name: FocusFlow-Windows-MSI
-          path: build/compose/binaries/main/msi/*.msi
+          path: build/compose/binaries/main-release/msi/*.msi
           retention-days: 30
           if-no-files-found: warn
 
