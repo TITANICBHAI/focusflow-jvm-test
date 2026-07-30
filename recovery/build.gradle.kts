@@ -53,8 +53,8 @@ compose.desktop {
                 "java.desktop",
                 "java.logging",
                 "java.management",
-                "java.naming",
-                "java.net.http",
+                // java.naming  — removed: no JNDI usage in recovery source
+                // java.net.http — removed: no HttpClient usage in recovery source
                 "java.sql",
                 "jdk.unsupported"
             )
@@ -73,7 +73,8 @@ compose.desktop {
 
 kotlin {
     jvmToolchain {
-        languageVersion.set(JavaLanguageVersion.of(19))
+        // Java 21 — current LTS, matches main app and CI setup-java version.
+        languageVersion.set(JavaLanguageVersion.of(21))
     }
 }
 
