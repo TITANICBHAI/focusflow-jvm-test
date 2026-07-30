@@ -48,7 +48,9 @@ compose.desktop {
         buildTypes.release.proguard {
             // ProGuard 7.2.2 (Compose 1.6.1 default) supports up to Java 18 (class version 62).
             // Java 21 produces class version 65. Compose 1.5+ exposes version.set() to override.
-            version.set("7.5.0")
+            // 7.5.0 uses kotlin-metadata-jvm:2.0.0 which conflicts with Kotlin 1.9.x class files.
+            // 7.4.2 supports Java 21 class files (added in 7.4.0) and is Kotlin 1.9.x compatible.
+            version.set("7.4.2")
             isEnabled.set(true)
             optimize.set(true)
             obfuscate.set(false)          // keep readable class names for crash logs
