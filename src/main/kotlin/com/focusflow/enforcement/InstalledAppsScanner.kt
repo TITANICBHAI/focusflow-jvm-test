@@ -307,7 +307,7 @@ object InstalledAppsScanner {
                     val app = ScannedApp(procName, display, isRunning = false, exePath = e)
                     result[procName] = app
                     exePathCache.putIfAbsent(procName, e)
-                }
+                } catch (e2: Exception) { /* skip malformed desktop file */ }
             }
         }
         return result.values.sortedBy { it.displayName }
