@@ -32,36 +32,16 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm fuse libfuse2
+          sudo apt-get install -y rpm fuse libfuse2 imagemagick
 
       - name: Generate PNG icon (focusflow.png)
-        shell: bash
         run: |
           mkdir -p src/main/resources
-          if command -v convert &>/dev/null; then
-            convert -size 256x256 xc:'#09090f' \
-              -fill '#4fc3f7' -draw "arc 40,40 216,216 -50,140" \
-              -fill '#7c4dff' -draw "arc 40,40 216,216 130,260" \
-              -fill '#6699ee' -draw "rectangle 106,128 150,135" \
-              src/main/resources/focusflow.png
-          else
-            echo "ImageMagick not found, creating minimal icon placeholder"
-            python3 << 'EOF'
-import struct, zlib
-
-def png_chunk(chunk_type, data):
-    c = chunk_type + data
-    return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-
-ihdr = struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0)
-idat = zlib.compress(b'\x00\x09\x09\x0f')
-with open('src/main/resources/focusflow.png', 'wb') as f:
-    f.write(b'\x89PNG\r\n\x1a\n')
-    f.write(png_chunk(b'IHDR', ihdr))
-    f.write(png_chunk(b'IDAT', idat))
-    f.write(png_chunk(b'IEND', b''))
-EOF
-          fi
+          convert -size 256x256 xc:'#09090f' \
+            -fill '#4fc3f7' -draw "arc 40,40 216,216 -50,140" \
+            -fill '#7c4dff' -draw "arc 40,40 216,216 130,260" \
+            -fill '#6699ee' -draw "rectangle 106,128 150,135" \
+            src/main/resources/focusflow.png
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
