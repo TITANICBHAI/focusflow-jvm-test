@@ -87,7 +87,7 @@ fun LinuxSetupScreen() {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.CheckCircle, ContentDescription = null, tint = Success, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Success, modifier = Modifier.size(16.dp))
                     Text(
                         "Running on Linux — partial enforcement available. Install the tools below for full capability.",
                         fontSize = 12.sp,
@@ -104,7 +104,7 @@ fun LinuxSetupScreen() {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.Warning, Description = null, tint = Warning, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = Warning, modifier = Modifier.size(16.dp))
                     Text(
                         "Not running on Linux — this setup page is Linux-specific.",
                         fontSize = 12.sp,
@@ -153,6 +153,7 @@ fun LinuxSetupScreen() {
             // 2. iptables — required for NuclearMode firewall
             PermissionSetupCard(
                 icon = Icons.Default.Lock,
+                iconTint = Error,
                 title = "iptables",
                 needed = "Network-level blocking for domains during Nuclear Mode.",
                 howTo = """
@@ -168,7 +169,8 @@ fun LinuxSetupScreen() {
 
             // 3. xdotool — kiosk panel hide/show
             PermissionSetupCard(
-                icon = Icons.Default.VisibilityPlateOff,
+                icon = Icons.Default.VisibilityOff,
+                iconTint = Warning,
                 title = "xdotool",
                 needed = "Hide and restore desktop panels during Focus Launcher kiosk mode.",
                 howTo = """
@@ -183,6 +185,7 @@ fun LinuxSetupScreen() {
             // 4. notify-send — desktop notifications
             PermissionSetupCard(
                 icon = Icons.Default.Notifications,
+                iconTint = Warning,
                 title = "notify-send (libnotify)",
                 needed = "Desktop toast notifications when the system tray is unavailable.",
                 howTo = """
@@ -197,6 +200,7 @@ fun LinuxSetupScreen() {
             // 5. systemd user units — watchdog
             PermissionSetupCard(
                 icon = Icons.Default.Refresh,
+                iconTint = Warning,
                 title = "systemd user units",
                 needed = "Watchdog timer to restart FocusFlow if it crashes during a session.",
                 howTo = """
@@ -211,6 +215,7 @@ fun LinuxSetupScreen() {
             // 6. resolvectl (DNS cache flush)
             PermissionSetupCard(
                 icon = Icons.Default.Dns,
+                iconTint = Warning,
                 title = "resolvectl / nscd",
                 needed = "Flush DNS cache after blocking domains via /etc/hosts.",
                 howTo = """

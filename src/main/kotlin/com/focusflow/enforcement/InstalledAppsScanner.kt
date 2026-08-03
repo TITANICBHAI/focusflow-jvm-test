@@ -156,7 +156,7 @@ object InstalledAppsScanner {
                     (isLinux || app.processName.endsWith(".exe"))
                 }
                 .distinctBy { it.processName }
-        } catch (_: Exception) { emptyList() }
+        } catch (e: Exception) { emptyList() }
 
         // Populate path cache from running processes (most accurate paths)
         running.forEach { app ->
@@ -220,7 +220,7 @@ object InstalledAppsScanner {
         for ((hive, key) in regKeys) {
             val subkeys = try {
                 Advapi32Util.registryGetKeys(hive, key)
-            } catch (_: Exception) { continue }
+            } catch (e: Exception) { continue }
 
             for (sub in subkeys) {
                 try {
@@ -262,7 +262,7 @@ object InstalledAppsScanner {
                     result[processName] = app
                     exePathCache.putIfAbsent(processName, rawPath)
 
-                } catch (_: Exception) { /* malformed key — skip */ }
+                } catch (e: Exception) { /* malformed key — skip */ }
             }
         }
 
@@ -287,7 +287,7 @@ object InstalledAppsScanner {
             java.io.File(System.getProperty("user.home") + "/.local/share/applications")
         )
         for (dir in dirs) {
-            val files = try { dir.listFiles() } catch (_: Exception) { null } ?: continue
+            val files = try { dir.listFiles() } catch (e: Exception) { null } ?: continue
             for (f in files) {
                 if (f.extension?.lowercase() != "desktop") continue
                 try {
