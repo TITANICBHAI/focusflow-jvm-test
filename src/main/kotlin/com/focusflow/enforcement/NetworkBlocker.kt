@@ -169,6 +169,30 @@ object NetworkBlocker {
         return true
     }
 
+    /**
+     * Block outbound traffic to [domain] on Linux via iptables.
+     * Resolves the domain to IPs first and inserts per-IP OUTPUT REJECT rules.
+     * Requires pkexec (polkit) to be available for privilege elevation.
+     *
+     * NOTE: HostsBlocker already covers the common case. This layer only adds
+     * value against a user who edits /etc/hosts to bypass blocks.
+     */
+    private fun blockLinux(domain: String) {
+        if (!isLinux) return
+        try {
+            val ips = java.net.InetAddress.getAllByName(domain)
+            for (ip in ips) {
+                Runtime.getRuntime().exec(
+                    arrayOf("pkexec", "iptables", "-A", "OUTPUT",
+                        "-d", ip.hostAddress, "-j", "REJECT")
+                )
+            }
+        } catch (_: Exception) {
+            // Silently skip if pkexec is unavailable or resolution fails;
+            // HostsBlocker remains the primary Linux blocking layer.
+        }
+    }
+
     private fun verifyRuleExists(ruleName: String): Boolean {
         val count = runPowerShellAndRead(
             "(Get-NetFirewallRule -DisplayName '$ruleName' -ErrorAction SilentlyContinue " +

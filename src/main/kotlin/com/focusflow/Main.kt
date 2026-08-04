@@ -31,7 +31,7 @@ fun main() = application {
     // (e.g. SIGKILL, power loss, OOM kill by the OS — scenarios where the JVM
     // shutdown hook cannot fire). This is safe: tryDelete() is a no-op when the
     // key doesn't exist, so a clean-boot startup is unaffected.
-    try { RegistryLockdown.disable() } catch (_: Throwable) {}
+    if (IS_WINDOWS) try { RegistryLockdown.disable() } catch (_: Throwable) {}
 
     try {
         Database.init()
@@ -81,7 +81,7 @@ fun main() = application {
 
     // Sync existing FocusFlow firewall rules from Windows Firewall on startup
     // so rules created in a previous session are recognised without re-applying.
-    NetworkBlocker.syncFromFirewall()
+    if (IS_WINDOWS) NetworkBlocker.syncFromFirewall()
 
     // Start the hosts-file integrity monitor — re-applies blocks if an external
     // tool (antivirus, etc.) removes our entries while the app is running.

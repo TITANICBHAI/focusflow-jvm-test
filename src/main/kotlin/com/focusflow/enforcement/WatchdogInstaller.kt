@@ -67,7 +67,11 @@ object WatchdogInstaller {
             val home = System.getProperty("user.home")
             val systemdDir = File("$home/.config/systemd/user")
             systemdDir.mkdirs()
-            val execPath = WindowsStartupManager.resolveExePath()
+            val execPath = ProcessHandle.current().info().command().orElse(null)
+                ?: runCatching {
+                    java.nio.file.Files.readSymbolicLink(java.nio.file.Path.of("/proc/self/exe")).toString()
+                }.getOrNull()
+                ?: return  // can't determine exe path — skip watchdog silently
 
             File(systemdDir, "focusflow-watchdog.service").writeText(
                 "[Unit]\n" +
