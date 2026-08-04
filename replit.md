@@ -1,3 +1,21 @@
+# FocusFlow — JVM Desktop App
+
+## How to run (Replit)
+The workflow "Start application" builds and launches the Compose Desktop UI.
+Java toolchain is set to **19** in both `build.gradle.kts` and `recovery/build.gradle.kts` to match the GraalVM 22.3.1 (Java 19) available on Replit. Source code comments referencing "Java 17" are intentional — the app targets Java 17 language level in GitHub CI (which installs Temurin 19 for the toolchain match).
+
+## CI / GitHub Actions
+Push via `bash push_to_github.sh` (requires `GITHUB_PERSONAL_ACCESS_TOKEN` secret).
+Three workflows build on every push to `main`:
+- **build-linux.yml** — packages `.deb`, `.rpm`, `.AppImage` on `ubuntu-latest`
+- **build-windows.yml** — packages `.exe`, `.msi`, `.msix` on `windows-latest`
+- **build-recovery.yml** — packages recovery tool `.exe` on `windows-latest`
+
+### Linux packaging notes
+- `rpm-build` is unavailable on Ubuntu 24.04; `rpm` package includes `rpmbuild`
+- AppImage is created via a manual `appimagetool` fallback if Compose Desktop's built-in step produces nothing
+- `.deb` and `.rpm` Requires/Depends fields are injected post-build (xdotool, wmctrl)
+
 # FocusFlow JVM — by TBTechs
 
 A real-enforcement productivity & focus app for Windows, built with Kotlin + Compose Multiplatform Desktop.
