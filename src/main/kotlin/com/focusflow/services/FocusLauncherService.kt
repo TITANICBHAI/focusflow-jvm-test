@@ -8,6 +8,7 @@ import com.focusflow.enforcement.ProcessMonitor
 import com.focusflow.enforcement.User32Extra
 import com.focusflow.enforcement.isWindows
 import com.focusflow.enforcement.isLinux
+import com.focusflow.enforcement.hasXdotool
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -395,7 +396,8 @@ object FocusLauncherService {
     private fun hideTaskbar() {
         if (isLinux) {
             // Linux kiosk: try xdotool to hide panels. DE-specific, may not
-            // work on all desktop environments. Skip silently on failure.
+            // work on all desktop environments. Skip silently if not installed.
+            if (!hasXdotool) return
             try {
                 val search = ProcessBuilder("xdotool", "search", "--class", "panel")
                     .redirectErrorStream(true).start()
@@ -427,7 +429,9 @@ object FocusLauncherService {
 
     private fun showTaskbar() {
         if (isLinux) {
-            // Linux kiosk: attempt to restore panels via xdotool MapWindow
+            // Linux kiosk: attempt to restore panels via xdotool MapWindow.
+            // Skip silently if not installed — panels were never hidden in that case.
+            if (!hasXdotool) return
             try {
                 val search = ProcessBuilder("xdotool", "search", "--class", "panel")
                     .redirectErrorStream(true).start()
