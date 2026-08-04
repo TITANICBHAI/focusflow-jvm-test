@@ -32,7 +32,10 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm rpm-build fuse libfuse2 imagemagick squashfs-tools file
+          # rpm-build is not available on Ubuntu 24.04; install rpm (includes rpm2cpio)
+          # and attempt rpmbuild tools separately as best-effort.
+          sudo apt-get install -y rpm fuse libfuse2 imagemagick squashfs-tools file
+          sudo apt-get install -y rpm-build 2>/dev/null || true
 
       - name: Generate PNG icon (focusflow.png)
         run: |
