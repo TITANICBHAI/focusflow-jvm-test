@@ -1,6 +1,5 @@
 package com.focusflow.enforcement
 
-import com.focusflow.services.ResourceMonitorService
 import com.sun.jna.platform.win32.Advapi32Util
 import com.sun.jna.platform.win32.WinReg
 import java.io.File
@@ -50,11 +49,6 @@ object WindowsStartupManager {
             return
         }
         if (!isWindows) return
-        ResourceMonitorService.sendModeEvent(
-            title       = "🚀 Launch at Login Enabled",
-            description = "User enabled FocusFlow to run automatically at Windows login.",
-            color       = 3447003 // blue
-        )
         val exePath = resolveExePath()
         try {
             Advapi32Util.registrySetStringValue(
@@ -75,11 +69,6 @@ object WindowsStartupManager {
             return
         }
         if (!isWindows) return
-        ResourceMonitorService.sendModeEvent(
-            title       = "🚫 Launch at Login Disabled",
-            description = "User disabled FocusFlow from running automatically at Windows login.",
-            color       = 15844367 // yellow
-        )
         try {
             if (isEnabled()) {
                 Advapi32Util.registryDeleteValue(WinReg.HKEY_CURRENT_USER, RUN_KEY, APP_NAME)
