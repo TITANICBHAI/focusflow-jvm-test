@@ -79,6 +79,11 @@ compose.desktop {
                 packageName   = "focusflow"
                 vendor        = "TBTechs"
                 licenseFile   = project.file("LICENSE")
+                // Declared as package dependencies so apt/dnf installs them automatically
+                // alongside FocusFlow — no manual steps for the user.
+                // xdotool: foreground window detection on X11
+                // wmctrl:  fallback active-window PID lookup on Wayland
+                packageDependencies = listOf("xdotool", "wmctrl")
             }
         }
     }
