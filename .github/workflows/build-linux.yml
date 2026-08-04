@@ -53,21 +53,47 @@ jobs:
 
       # ── Inject package dependencies into the .deb ──────────────────────────
       # Compose Desktop 1.6.x doesn't expose a packageDependencies DSL property
-      # for the Linux target, so we repack the .deb here to add the Depends
-      # field.  apt will then auto-install xdotool + wmctrl alongside FocusFlow
-      # so users never have to run a separate install command.
+      # for the Linux target, so we repack the .deb here to merge xdotool +
+      # wmctrl into the Depends field.  apt will then auto-install them
+      # alongside FocusFlow so users never need a separate install step.
       - name: Inject Depends into .deb (xdotool, wmctrl)
         run: |
           DEB=$(ls build/compose/binaries/main/deb/*.deb | head -1)
           echo "Repacking: $DEB"
           mkdir -p /tmp/deb_repack
           dpkg-deb -R "$DEB" /tmp/deb_repack
-          # Remove any existing Depends line (shouldn't be one, but be safe)
-          sed -i '/^Depends:/d' /tmp/deb_repack/DEBIAN/control
-          # Append our dependency line
-          echo "Depends: xdotool, wmctrl" >> /tmp/deb_repack/DEBIAN/control
-          echo "--- control file after patch ---"
-          cat /tmp/deb_repack/DEBIAN/control
+
+          # Use Python to safely merge into existing Depends (handles
+          # multi-line continuation fields that plain sed would orphan).
+          python3 - <<'PYEOF'
+          import re, sys
+
+          ctrl_path = '/tmp/deb_repack/DEBIAN/control'
+          ctrl = open(ctrl_path).read()
+
+          # Extract existing Depends value (header + any continuation lines)
+          m = re.search(r'^Depends:(.*(?:\n[ \t].*)*)' , ctrl, re.MULTILINE)
+          existing = m.group(1).strip().replace('\n ', ' ').replace('\n\t', ' ') if m else ''
+
+          # Build merged value: keep existing deps, add ours if not already there
+          extra = [d for d in ['xdotool', 'wmctrl'] if d not in existing]
+          merged = ', '.join(filter(None, [existing] + extra))
+
+          # Remove old Depends block entirely (header + continuations)
+          ctrl = re.sub(r'^Depends:.*(?:\n[ \t].*)*\n?', '', ctrl, flags=re.MULTILINE)
+
+          # Insert merged Depends before Description (or append if no Description)
+          new_field = f'Depends: {merged}\n'
+          if 'Description:' in ctrl:
+              ctrl = ctrl.replace('Description:', new_field + 'Description:', 1)
+          else:
+              ctrl = ctrl.rstrip('\n') + '\n' + new_field
+
+          open(ctrl_path, 'w').write(ctrl)
+          print('--- control file after patch ---')
+          print(ctrl)
+          PYEOF
+
           dpkg-deb -b /tmp/deb_repack "$DEB"
           echo "Repacked: $DEB"
 
