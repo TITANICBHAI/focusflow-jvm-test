@@ -67,19 +67,35 @@ object WatchdogInstaller {
             val home = System.getProperty("user.home")
             val systemdDir = File("$home/.config/systemd/user")
             systemdDir.mkdirs()
-            val execPath = ProcessHandle.current().info().command().orElse(null)
+
+            // Resolve the full command line used to launch this JVM process so the
+            // watchdog relaunches FocusFlow exactly the same way (same classpath, flags, etc.)
+            val info = ProcessHandle.current().info()
+            val cmd = info.command().orElse(null)
                 ?: runCatching {
                     java.nio.file.Files.readSymbolicLink(java.nio.file.Path.of("/proc/self/exe")).toString()
                 }.getOrNull()
                 ?: return  // can't determine exe path — skip watchdog silently
+
+            // Reconstruct the full ExecStart line, quoting any argument that contains spaces
+            val args = info.arguments().map { it.toList() }.orElse(emptyList())
+            val quotedArgs = args.joinToString(" ") { arg ->
+                if (arg.any { it == ' ' || it == '"' || it == '\\' })
+                    "\"${arg.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+                else arg
+            }
+            val execStartLine = if (quotedArgs.isNotEmpty()) "$cmd $quotedArgs" else cmd
 
             File(systemdDir, "focusflow-watchdog.service").writeText(
                 "[Unit]\n" +
                 "Description=FocusFlow Watchdog\n" +
                 "[Service]\n" +
                 "Type=oneshot\n" +
-                "ExecStartPre=/bin/sh -c 'pgrep -f focusflow > /dev/null || exit 0'\n" +
-                "ExecStart=$execPath\n" +
+                // ExecStartPre: exit 0 (proceed to start) only when FocusFlow is NOT running.
+                // '! pgrep' → exits 1 if process found (abort), 0 if not found (continue).
+                // Previously this was inverted and would spawn a duplicate on every tick.
+                "ExecStartPre=/bin/sh -c '! pgrep -f focusflow > /dev/null'\n" +
+                "ExecStart=$execStartLine\n" +
                 "Restart=no\n"
             )
 
@@ -96,6 +112,7 @@ object WatchdogInstaller {
             ProcessBuilder("systemctl", "--user", "daemon-reload").start().waitFor()
             ProcessBuilder("systemctl", "--user", "enable", "focusflow-watchdog.timer").start().waitFor()
             ProcessBuilder("systemctl", "--user", "start", "focusflow-watchdog.timer").start().waitFor()
+            EnforcementLog.info("WatchdogInstaller", "Linux watchdog timer installed (cmd=$execStartLine)")
         } catch (_: Exception) {
             EnforcementLog.warn("WatchdogInstaller", "Failed to install Linux watchdog timer")
         }
