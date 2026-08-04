@@ -14,17 +14,17 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Set up JDK 19
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v4.7.0
         with:
           java-version: '19'
           distribution: 'temurin'
           architecture: 'x64'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v4.4.1
         with:
           gradle-version: '8.6'
           cache-read-only: false
@@ -32,7 +32,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm fuse libfuse2 imagemagick
+          sudo apt-get install -y rpm rpm-build fuse libfuse2 imagemagick squashfs-tools file
 
       - name: Generate PNG icon (focusflow.png)
         run: |
@@ -50,6 +50,74 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: ./gradlew packageDeb packageRpm packageAppImage
+
+      - name: Debug — list compose output
+        if: always()
+        run: |
+          echo "=== All files under build/compose/binaries ==="
+          find build/compose/binaries -type f 2>/dev/null | sort || echo "(none)"
+
+      # ── AppImage: manual fallback if Compose Desktop appimagetool failed ─────
+      # Compose Desktop 1.6.x downloads appimagetool at task time; in sandboxed
+      # GitHub Actions environments it sometimes runs but produces no .AppImage.
+      # We detect this and fall back to downloading appimagetool ourselves and
+      # packaging the app/ directory that Compose Desktop always produces.
+      - name: Package AppImage (manual fallback if Compose Desktop produced none)
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          APPIMAGE_OUT="build/compose/binaries/main/appImage"
+          APP_DIR=$(find build/compose/binaries/main/app -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
+
+          if ls "$APPIMAGE_OUT"/*.AppImage 1>/dev/null 2>&1; then
+            echo "✔  AppImage already present, skipping manual step."
+            exit 0
+          fi
+
+          if [ -z "$APP_DIR" ]; then
+            echo "⚠  No app directory found under build/compose/binaries/main/app/ — cannot create AppImage."
+            exit 0
+          fi
+
+          echo "App directory: $APP_DIR"
+          VERSION=$(grep '^version' build.gradle.kts | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Version: $VERSION"
+
+          # Download appimagetool
+          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
+            -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+
+          # Build a minimal AppDir from what Compose Desktop produced
+          APPDIR="/tmp/FocusFlow.AppDir"
+          cp -r "$APP_DIR" "$APPDIR"
+
+          # Desktop entry (required by appimagetool)
+          cat > "$APPDIR/FocusFlow.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Name=FocusFlow
+          Exec=FocusFlow
+          Icon=focusflow
+          Type=Application
+          Categories=Utility;Productivity;
+          Comment=Focus & productivity app with real app blocking
+          DESKTOP
+
+          # Icon (256 px PNG)
+          cp src/main/resources/focusflow.png "$APPDIR/focusflow.png" 2>/dev/null || true
+
+          # AppRun symlink to the actual launcher
+          LAUNCHER=$(find "$APPDIR" -maxdepth 2 -name "FocusFlow" -type f | head -1)
+          if [ -n "$LAUNCHER" ]; then
+            ln -sf "$(realpath --relative-to="$APPDIR" "$LAUNCHER")" "$APPDIR/AppRun" 2>/dev/null \
+              || cp "$LAUNCHER" "$APPDIR/AppRun"
+          fi
+
+          mkdir -p "$APPIMAGE_OUT"
+          ARCH=x86_64 /tmp/appimagetool "$APPDIR" \
+            "$APPIMAGE_OUT/FocusFlow-${VERSION}-x86_64.AppImage" \
+            && echo "✔  AppImage created." \
+            || echo "⚠  appimagetool failed — AppImage will not be uploaded."
 
       # ── Inject package dependencies into the .deb ──────────────────────────
       # Compose Desktop 1.6.x doesn't expose a packageDependencies DSL property
@@ -98,36 +166,76 @@ jobs:
           echo "Repacked: $DEB"
 
       # ── Inject Requires into the .rpm ──────────────────────────────────────
-      # rpmrebuild lets us edit the spec in-place without the full build chain.
+      # rpmrebuild is not available on ubuntu-latest; we use rpm2cpio + rpmbuild
+      # to extract the RPM, patch the spec Requires field, and rebuild in-place.
       - name: Inject Requires into .rpm (xdotool, wmctrl)
         run: |
-          sudo apt-get install -y rpmrebuild 2>/dev/null || true
-          RPM=$(ls build/compose/binaries/main/rpm/*.rpm | head -1)
+          RPM=$(ls build/compose/binaries/main/rpm/*.rpm 2>/dev/null | head -1)
           if [ -z "$RPM" ]; then echo "No RPM found, skipping."; exit 0; fi
-          echo "Repacking: $RPM"
-          rpmrebuild \
-            --change-spec-preamble='sed -i "/^Name:/a Requires: xdotool wmctrl" ' \
-            -np "$RPM" && \
-            NEW_RPM=$(find /root/rpmbuild/RPMS -name "*.rpm" | head -1) && \
-            cp "$NEW_RPM" "$RPM" && echo "Repacked: $RPM" || \
-            echo "⚠  rpmrebuild not available — RPM will not auto-install xdotool/wmctrl"
+          echo "Patching Requires in: $RPM"
+
+          # Set up rpmbuild tree
+          mkdir -p ~/rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+
+          # Query the existing spec-like fields from the binary RPM
+          NAME=$(rpm -qp --queryformat '%{NAME}' "$RPM" 2>/dev/null)
+          VERSION_RPM=$(rpm -qp --queryformat '%{VERSION}' "$RPM" 2>/dev/null)
+          RELEASE=$(rpm -qp --queryformat '%{RELEASE}' "$RPM" 2>/dev/null)
+          ARCH_RPM=$(rpm -qp --queryformat '%{ARCH}' "$RPM" 2>/dev/null)
+          SUMMARY=$(rpm -qp --queryformat '%{SUMMARY}' "$RPM" 2>/dev/null)
+          LICENSE=$(rpm -qp --queryformat '%{LICENSE}' "$RPM" 2>/dev/null)
+
+          # Extract the payload
+          BUILDROOT=~/rpmbuild/BUILDROOT/${NAME}-${VERSION_RPM}-${RELEASE}.${ARCH_RPM}
+          mkdir -p "$BUILDROOT"
+          cd "$BUILDROOT"
+          rpm2cpio "$OLDPWD/$RPM" | cpio -idm --quiet
+          cd "$OLDPWD"
+
+          # Write a minimal spec
+          SPEC=~/rpmbuild/SPECS/${NAME}.spec
+          cat > "$SPEC" <<SPECEOF
+          Name:       $NAME
+          Version:    $VERSION_RPM
+          Release:    $RELEASE
+          Summary:    $SUMMARY
+          License:    $LICENSE
+          Requires:   xdotool wmctrl
+
+          %description
+          $SUMMARY
+
+          %install
+          cp -r ${BUILDROOT}/. %{buildroot}/
+
+          %files
+          $(rpm2cpio "$RPM" | cpio -t --quiet 2>/dev/null | sed 's|^\./||' | grep -v '^\.$' | while read f; do echo "/$f"; done)
+          SPECEOF
+
+          rpmbuild -bb \
+            --buildroot "$BUILDROOT" \
+            --define "_rpmdir $(dirname "$(realpath "$RPM")")" \
+            --define "_build_name_fmt %%{NAME}-%%{VERSION}-%%{RELEASE}.%%{ARCH}.rpm" \
+            "$SPEC" 2>&1 \
+            && echo "✔  RPM Requires patched." \
+            || echo "⚠  rpmbuild failed — RPM will not auto-install xdotool/wmctrl"
 
       - name: Upload Deb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: focusflow-deb
           path: build/compose/binaries/main/deb/*.deb
           if-no-files-found: error
 
       - name: Upload Rpm artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: focusflow-rpm
           path: build/compose/binaries/main/rpm/*.rpm
           if-no-files-found: error
 
       - name: Upload AppImage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: focusflow-appimage
           path: build/compose/binaries/main/appImage/*.AppImage
