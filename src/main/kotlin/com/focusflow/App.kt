@@ -97,7 +97,9 @@ fun App() {
     var showGlobalPinSetup  by remember { mutableStateOf(false) }
     var showAndroidPromo    by remember { mutableStateOf(false) }
     var showReviewPrompt    by remember { mutableStateOf(false) }
-    var showTelemetryConsent     by remember { mutableStateOf(false) }
+    var showTelemetryConsent          by remember { mutableStateOf(false) }
+    // True when onboarding is waiting behind the consent dialog on first launch.
+    var pendingOnboardingAfterConsent by remember { mutableStateOf(false) }
     var showRegistryOrphanDialog by remember { mutableStateOf(false) }
     var sidebarCollapsed    by remember { mutableStateOf(false) }
     // Default false = show button until confirmed elevated (safe default per user requirement).
@@ -156,10 +158,9 @@ fun App() {
                 && !fl
                 && !showAndroid
 
-            // Show telemetry consent on the 2nd launch (after onboarding is done)
+            // Show telemetry consent on the very first launch, before onboarding,
             // if the user has never been asked (null = never set, as opposed to "true"/"false").
-            val showConsent = !fl
-                && Database.getSetting("crash_reports_enabled") == null
+            val showConsent = Database.getSetting("crash_reports_enabled") == null
 
             if (showAndroid) {
                 Database.setSetting("android_promo_shown_date", java.time.LocalDate.now().toString())
@@ -175,7 +176,9 @@ fun App() {
         val reviewPrompt = launchData[3]
         val needsConsent = launchData[4]
 
-        if (firstLaunch) showOnboarding = true
+        if (firstLaunch && !needsConsent) showOnboarding = true
+        // On first launch with consent pending: queue onboarding to fire after consent is dismissed.
+        if (firstLaunch && needsConsent) pendingOnboardingAfterConsent = true
         if (pinNeeded && !firstLaunch) showGlobalPinSetup = true
         if (androidPromo) showAndroidPromo = true
         if (reviewPrompt) showReviewPrompt = true
@@ -378,11 +381,21 @@ fun App() {
                     scope.launch(Dispatchers.IO) {
                         Database.setSetting("crash_reports_enabled", "true")
                     }
+                    // Hand off to onboarding if this was the first-launch gate
+                    if (pendingOnboardingAfterConsent) {
+                        pendingOnboardingAfterConsent = false
+                        showOnboarding = true
+                    }
                 },
                 onDecline = {
                     showTelemetryConsent = false
                     scope.launch(Dispatchers.IO) {
                         Database.setSetting("crash_reports_enabled", "false")
+                    }
+                    // Hand off to onboarding even on decline — user still needs onboarding
+                    if (pendingOnboardingAfterConsent) {
+                        pendingOnboardingAfterConsent = false
+                        showOnboarding = true
                     }
                 }
             )
