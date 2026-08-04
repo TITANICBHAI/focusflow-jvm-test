@@ -4,67 +4,48 @@
 #
 # Usage:
 #   bash ci_watch.sh [commit_message]
+#   SKIP_PUSH=1 bash ci_watch.sh     # just watch latest run, don't push
 #
-# Set GITHUB_PERSONAL_ACCESS_TOKEN as a Replit Secret before running.
-#
-# What it does:
-#   1. Commits & pushes all pending changes (calls push_to_github.sh)
-#   2. Waits for GitHub Actions to start the triggered run
-#   3. Streams job status until every job is done
-#   4. On failure: prints the full log of every failed step, then exits 1
-#      so you can fix the code and run again.
-#   5. On success: prints the artifact download URLs and exits 0.
-#
-# Set SKIP_PUSH=1 to skip the push step and just watch the latest run.
+# Requires: GITHUB_PERSONAL_ACCESS_TOKEN set as a Replit Secret
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# ── config ────────────────────────────────────────────────────────────────────
 REPO="TITANICBHAI/FocusFlow-jvm-Test"
 BRANCH="main"
-POLL_INTERVAL=12   # seconds between status polls
-MAX_WAIT=3600      # give up after 1 hour
-
+POLL_INTERVAL=15
+MAX_WAIT=3600
 API="https://api.github.com/repos/${REPO}"
-# ─────────────────────────────────────────────────────────────────────────────
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
 
+# ── helpers ───────────────────────────────────────────────────────────────────
 require_token() {
   if [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
-    echo "❌  GITHUB_PERSONAL_ACCESS_TOKEN is not set."
-    echo "    Add it as a Replit Secret, then re-run."
+    echo "❌  GITHUB_PERSONAL_ACCESS_TOKEN is not set. Add it as a Replit Secret."
     exit 1
   fi
 }
 
-gh_api() {
-  # gh_api <method> <path> [extra curl args...]
-  local method="$1"; shift
-  local path="$1";   shift
+gh_get() {
+  # gh_get <path> → saves to $TMP/response.json
   curl -fsSL \
-    -X "$method" \
     -H "Authorization: Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
-    "$@" \
-    "${API}${path}"
+    "${API}${1}" -o "$TMP/response.json"
 }
 
-# Print a coloured status badge
-badge() {
-  local status="$1" conclusion="${2:-}"
-  case "$status" in
-    completed)
-      case "$conclusion" in
-        success)   echo -e "\e[32m✔ success\e[0m" ;;
-        failure)   echo -e "\e[31m✘ failure\e[0m" ;;
-        cancelled) echo -e "\e[33m⊘ cancelled\e[0m" ;;
-        skipped)   echo -e "\e[90m— skipped\e[0m" ;;
-        *)         echo -e "\e[33m? $conclusion\e[0m" ;;
-      esac ;;
-    in_progress) echo -e "\e[34m⟳ running\e[0m" ;;
-    queued)      echo -e "\e[90m… queued\e[0m" ;;
-    *)           echo "$status" ;;
-  esac
+gh_get_url() {
+  # gh_get_url <full_url> → saves to $TMP/response.json
+  curl -fsSL -L \
+    -H "Authorization: Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "${1}" -o "$TMP/response.json"
+}
+
+node_run() {
+  node -e "$1" -- "$TMP/response.json"
 }
 
 # ── 1. Push ───────────────────────────────────────────────────────────────────
@@ -72,47 +53,45 @@ require_token
 
 if [ "${SKIP_PUSH:-0}" != "1" ]; then
   echo ""
-  echo "═══════════════════════════════════════════"
+  echo "══════════════════════════════════════════"
   echo " STEP 1 — Pushing to GitHub"
-  echo "═══════════════════════════════════════════"
+  echo "══════════════════════════════════════════"
   bash push_to_github.sh "${1:-}"
-  PUSH_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  PUSH_EPOCH=$(date -u +%s)
   echo ""
-  echo "⏱  Pushed at $PUSH_TIME — waiting for Actions to queue a run…"
+  echo "⏱  Pushed. Waiting for Actions to queue a run…"
 else
-  echo "ℹ  SKIP_PUSH=1 — skipping push, watching latest run instead."
-  PUSH_TIME=$(date -u -d "5 minutes ago" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
-    || date -u -v-5M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
-    || date -u '+%Y-%m-%dT%H:%M:%SZ')
+  echo "ℹ  SKIP_PUSH=1 — skipping push, watching latest run."
+  PUSH_EPOCH=$(( $(date -u +%s) - 300 ))
 fi
 
 # ── 2. Find the triggered run ─────────────────────────────────────────────────
 echo ""
-echo "═══════════════════════════════════════════"
+echo "══════════════════════════════════════════"
 echo " STEP 2 — Waiting for GitHub Actions run"
-echo "═══════════════════════════════════════════"
+echo "══════════════════════════════════════════"
 
 RUN_ID=""
 WAITED=0
 while [ -z "$RUN_ID" ]; do
   sleep $POLL_INTERVAL
   WAITED=$((WAITED + POLL_INTERVAL))
-  if [ $WAITED -gt 120 ]; then
-    echo "❌  No run appeared within 2 minutes. Check the repo's Actions tab."
+  if [ $WAITED -gt 180 ]; then
+    echo "❌  No run appeared within 3 minutes. Check the repo's Actions tab."
     exit 1
   fi
 
-  # Grab the most recent run on main, triggered after our push
-  RUN_ID=$(gh_api GET "/actions/runs?branch=${BRANCH}&per_page=5" \
-    | python3 -c "
-import sys, json, datetime
-runs = json.load(sys.stdin).get('workflow_runs', [])
-push_time = datetime.datetime.fromisoformat('${PUSH_TIME}'.replace('Z','+00:00'))
-for r in runs:
-    created = datetime.datetime.fromisoformat(r['created_at'].replace('Z','+00:00'))
-    if created >= push_time - datetime.timedelta(seconds=30):
-        print(r['id'])
-        break
+  gh_get "/actions/runs?branch=${BRANCH}&per_page=5" || { echo "  … API error (${WAITED}s)"; continue; }
+
+  RUN_ID=$(node_run "
+const fs = require('fs');
+const d = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const runs = d.workflow_runs || [];
+const cutoff = ${PUSH_EPOCH} - 30;
+for (const r of runs) {
+  const t = Math.floor(new Date(r.created_at).getTime() / 1000);
+  if (t >= cutoff) { process.stdout.write(String(r.id)); break; }
+}
 " 2>/dev/null || true)
 
   if [ -z "$RUN_ID" ]; then
@@ -120,125 +99,126 @@ for r in runs:
   fi
 done
 
-echo "▶  Run ID: $RUN_ID"
+echo "▶  Run #${RUN_ID}"
 echo "   https://github.com/${REPO}/actions/runs/${RUN_ID}"
 
 # ── 3. Poll until done ────────────────────────────────────────────────────────
 echo ""
-echo "═══════════════════════════════════════════"
+echo "══════════════════════════════════════════"
 echo " STEP 3 — Watching run status"
-echo "═══════════════════════════════════════════"
+echo "══════════════════════════════════════════"
 
 ELAPSED=0
-LAST_STATUS=""
+LAST_LINE=""
 while true; do
   sleep $POLL_INTERVAL
   ELAPSED=$((ELAPSED + POLL_INTERVAL))
 
-  RUN_JSON=$(gh_api GET "/actions/runs/${RUN_ID}")
-  STATUS=$(echo "$RUN_JSON"     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status'])")
-  CONCLUSION=$(echo "$RUN_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('conclusion') or '')")
-  WF_NAME=$(echo "$RUN_JSON"   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['name'])")
+  gh_get "/actions/runs/${RUN_ID}" || continue
 
-  if [ "$STATUS $CONCLUSION" != "$LAST_STATUS" ]; then
-    echo "  [$WF_NAME]  $(badge "$STATUS" "$CONCLUSION")  (+${ELAPSED}s)"
-    LAST_STATUS="$STATUS $CONCLUSION"
+  LINE=$(node_run "
+const fs = require('fs');
+const d = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+process.stdout.write(d.status + ' ' + (d.conclusion || '') + ' ' + d.name);
+" 2>/dev/null || echo "unknown  ")
+
+  STATUS=$(echo "$LINE" | awk '{print $1}')
+  CONCLUSION=$(echo "$LINE" | awk '{print $2}')
+  WF_NAME=$(echo "$LINE" | awk '{$1=$2=""; print substr($0,3)}')
+
+  if [ "$LINE" != "$LAST_LINE" ]; then
+    case "$STATUS/$CONCLUSION" in
+      completed/success)   ICON="✔ success" ;;
+      completed/failure)   ICON="✘ failure" ;;
+      completed/cancelled) ICON="⊘ cancelled" ;;
+      in_progress/)        ICON="⟳ running" ;;
+      queued/)             ICON="… queued" ;;
+      *)                   ICON="$STATUS/$CONCLUSION" ;;
+    esac
+    echo "  [${WF_NAME}]  ${ICON}  (+${ELAPSED}s)"
+    LAST_LINE="$LINE"
   fi
 
-  if [ "$STATUS" = "completed" ]; then
-    break
-  fi
-
-  if [ $ELAPSED -gt $MAX_WAIT ]; then
-    echo "❌  Timed out after ${MAX_WAIT}s."
-    exit 1
-  fi
+  [ "$STATUS" = "completed" ] && break
+  [ $ELAPSED -gt $MAX_WAIT ] && { echo "❌  Timed out."; exit 1; }
 done
 
-# ── 4. Print job summary ──────────────────────────────────────────────────────
+# ── 4. Job summary ────────────────────────────────────────────────────────────
 echo ""
-echo "═══════════════════════════════════════════"
+echo "══════════════════════════════════════════"
 echo " STEP 4 — Job summary"
-echo "═══════════════════════════════════════════"
+echo "══════════════════════════════════════════"
 
-JOBS_JSON=$(gh_api GET "/actions/runs/${RUN_ID}/jobs")
-FAILED_JOB_IDS=()
+gh_get "/actions/runs/${RUN_ID}/jobs"
+cp "$TMP/response.json" "$TMP/jobs.json"
 
-echo "$JOBS_JSON" | python3 -c "
-import sys, json
-jobs = json.load(sys.stdin)['jobs']
-for j in jobs:
-    icon = '✔' if j['conclusion'] == 'success' else ('✘' if j['conclusion'] == 'failure' else '–')
-    print(f\"  {icon} {j['name']}  [{j['conclusion'] or j['status']}]\")
-    for s in j.get('steps', []):
-        if s['conclusion'] not in ('success', 'skipped', None):
-            print(f\"      ✘ step: {s['name']}  ({s['conclusion']})\")
+node -e "
+const fs = require('fs');
+const jobs = JSON.parse(fs.readFileSync('$TMP/jobs.json', 'utf8')).jobs || [];
+for (const j of jobs) {
+  const icon = j.conclusion === 'success' ? '✔' : (j.conclusion === 'failure' ? '✘' : '–');
+  console.log('  ' + icon + ' ' + j.name + '  [' + (j.conclusion || j.status) + ']');
+  for (const s of j.steps || []) {
+    if (s.conclusion && s.conclusion !== 'success' && s.conclusion !== 'skipped') {
+      console.log('      ✘ step: ' + s.name + '  (' + s.conclusion + ')');
+    }
+  }
+}
 "
 
-# Collect IDs of failed jobs
-FAILED_JOB_IDS=($(echo "$JOBS_JSON" | python3 -c "
-import sys, json
-jobs = json.load(sys.stdin)['jobs']
-for j in jobs:
-    if j['conclusion'] == 'failure':
-        print(j['id'])
-"))
+FAILED_JOBS=$(node -e "
+const fs = require('fs');
+const jobs = JSON.parse(fs.readFileSync('$TMP/jobs.json', 'utf8')).jobs || [];
+jobs.filter(j => j.conclusion === 'failure').forEach(j => console.log(j.id + ' ' + j.name));
+" 2>/dev/null || true)
 
 # ── 5. Print logs of failed jobs ──────────────────────────────────────────────
-if [ ${#FAILED_JOB_IDS[@]} -gt 0 ]; then
+if [ -n "$FAILED_JOBS" ]; then
   echo ""
-  echo "═══════════════════════════════════════════"
+  echo "══════════════════════════════════════════"
   echo " STEP 5 — Failed job logs"
-  echo "═══════════════════════════════════════════"
-  for JOB_ID in "${FAILED_JOB_IDS[@]}"; do
-    JOB_NAME=$(echo "$JOBS_JSON" | python3 -c "
-import sys,json
-jobs=json.load(sys.stdin)['jobs']
-for j in jobs:
-    if str(j['id']) == '${JOB_ID}':
-        print(j['name'])
-        break
-")
+  echo "══════════════════════════════════════════"
+
+  while IFS= read -r line; do
+    JOB_ID=$(echo "$line" | awk '{print $1}')
+    JOB_NAME=$(echo "$line" | cut -d' ' -f2-)
     echo ""
-    echo "──── Log: $JOB_NAME (job $JOB_ID) ────"
-    # Logs come back as a zip of text files; curl -L follows redirect
+    echo "──── $JOB_NAME (job $JOB_ID) ────"
     LOG_URL="https://api.github.com/repos/${REPO}/actions/jobs/${JOB_ID}/logs"
-    LOG_RAW=$(curl -fsSL \
+    curl -fsSL -L \
       -H "Authorization: Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
-      -L "$LOG_URL" 2>/dev/null || true)
-
-    if [ -z "$LOG_RAW" ]; then
-      echo "  (no log text returned — check the Actions UI)"
+      "$LOG_URL" -o "$TMP/job_log.txt" 2>/dev/null || true
+    if [ -s "$TMP/job_log.txt" ]; then
+      tail -200 "$TMP/job_log.txt"
     else
-      # Show last 200 lines; most errors are at the bottom
-      echo "$LOG_RAW" | tail -200
+      echo "  (no log text returned — check the Actions UI)"
     fi
     echo "──────────────────────────────────────────"
-  done
+  done <<< "$FAILED_JOBS"
 
   echo ""
-  echo "❌  Run FAILED.  Fix the issues above, then run:  bash ci_watch.sh"
+  echo "❌  Run FAILED. Fix the issues above, then:  bash ci_watch.sh"
   exit 1
 fi
 
-# ── 6. List artifacts ─────────────────────────────────────────────────────────
+# ── 6. Artifacts ──────────────────────────────────────────────────────────────
 echo ""
-echo "═══════════════════════════════════════════"
+echo "══════════════════════════════════════════"
 echo " STEP 6 — Build artifacts"
-echo "═══════════════════════════════════════════"
+echo "══════════════════════════════════════════"
 
-gh_api GET "/actions/runs/${RUN_ID}/artifacts" | python3 -c "
-import sys, json
-arts = json.load(sys.stdin).get('artifacts', [])
-if not arts:
-    print('  (no artifacts uploaded)')
-else:
-    for a in arts:
-        size_mb = a['size_in_bytes'] / 1_048_576
-        print(f\"  📦 {a['name']}  ({size_mb:.1f} MB)\")
-        print(f\"     https://github.com/${REPO}/actions/runs/${RUN_ID}/artifacts/{a['id']}\")
+gh_get "/actions/runs/${RUN_ID}/artifacts"
+node -e "
+const fs = require('fs');
+const arts = JSON.parse(fs.readFileSync('$TMP/response.json', 'utf8')).artifacts || [];
+if (!arts.length) { console.log('  (no artifacts uploaded)'); }
+else arts.forEach(a => {
+  const mb = (a.size_in_bytes / 1048576).toFixed(1);
+  console.log('  📦 ' + a.name + '  (' + mb + ' MB)');
+  console.log('     https://github.com/${REPO}/actions/runs/${RUN_ID}#artifacts');
+});
 "
 
 echo ""
