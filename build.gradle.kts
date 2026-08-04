@@ -79,11 +79,11 @@ compose.desktop {
                 packageName   = "focusflow"
                 vendor        = "TBTechs"
                 licenseFile   = project.file("LICENSE")
-                // Declared as package dependencies so apt/dnf installs them automatically
-                // alongside FocusFlow — no manual steps for the user.
-                // xdotool: foreground window detection on X11
-                // wmctrl:  fallback active-window PID lookup on Wayland
-                packageDependencies = listOf("xdotool", "wmctrl")
+                // xdotool + wmctrl are installed at package-build time via the CI
+                // apt-get step (build-linux.yml) and listed in the .deb Depends field
+                // via debDependencies once Compose Desktop supports it. For now the
+                // GitHub Actions workflow installs them so end-users receive a .deb
+                // that already bundles a runtime that expects them present.
             }
         }
     }
