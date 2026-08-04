@@ -276,9 +276,9 @@ object InstalledAppsScanner {
     // ── Linux desktop-file scan ─────────────────────────────────────────────
 
     /**
-     * Scans /usr/share/applications/*.desktop and ~/.local/share/applications
+     * Scans .desktop files from /usr/share/applications and ~/.local/share/applications
      * for installed applications, parsing Name= and Exec= fields.
-     * // Linux kiosk: DE-specific, may not find all Flatpak/Snap apps.
+     * Note: DE-specific; may not find all Flatpak/Snap apps.
      */
     private fun scanLinuxDesktopFiles(): List<ScannedApp> {
         val result = mutableMapOf<String, ScannedApp>()
