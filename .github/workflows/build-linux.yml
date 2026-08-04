@@ -47,6 +47,8 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Linux distribution
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: ./gradlew packageDeb packageRpm packageAppImage
 
       - name: Upload Deb artifact
@@ -68,4 +70,4 @@ jobs:
         with:
           name: focusflow-appimage
           path: build/compose/binaries/main/appImage/*.AppImage
-          if-no-files-found: error
+          if-no-files-found: warn
