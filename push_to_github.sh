@@ -51,6 +51,6 @@ else
   echo "Nothing to commit — working tree clean."
 fi
 
-echo "Pushing HEAD → github.com/TITANICBHAI/FocusFlow-jvm (main)..."
+echo "Pushing HEAD → github.com/TITANICBHAI/FocusFlow-jvm-Test (main)..."
 git push "$REPO" HEAD:main
-echo "Done. Watch CI at: https://github.com/TITANICBHAI/FocusFlow-jvm/actions"
+echo "Done. Watch CI at: https://github.com/TITANICBHAI/FocusFlow-jvm-Test/actions"
