@@ -24,6 +24,19 @@ dependencies {
     implementation("net.java.dev.jna:jna-platform:5.14.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.7.3")
+
+    // Crash / error reporting — replaces the Discord webhook approach
+    implementation("io.sentry:sentry:7.14.0")
+
+    testImplementation(kotlin("test"))
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.test {
+    useJUnitPlatform()
+    // Only run on Linux CI (tests guard themselves, but skip entirely on Windows/Mac)
+    onlyIf { !System.getProperty("os.name", "").lowercase().contains("windows") }
 }
 
 compose.desktop {

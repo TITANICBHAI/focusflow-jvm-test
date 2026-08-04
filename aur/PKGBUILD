@@ -1,0 +1,54 @@
+# Maintainer: Your Name <your-email@example.com>
+pkgname=focusflow-bin
+pkgver=1.1.6
+pkgrel=1
+pkgdesc="Focus and productivity app with real app blocking (binary AppImage release)"
+arch=('x86_64')
+url="https://github.com/TITANICBHAI/FocusFlow-jvm-Test"
+license=('custom')
+depends=('xdotool' 'wmctrl' 'libnotify')
+optdepends=('polkit: needed for iptables-based network blocking (optional)')
+provides=('focusflow')
+conflicts=('focusflow')
+
+# Update sha256sum after each release:
+#   curl -sL <AppImage URL> | sha256sum
+source=("focusflow-${pkgver}.AppImage::https://github.com/TITANICBHAI/FocusFlow-jvm-Test/releases/download/v${pkgver}/FocusFlow-${pkgver}-x86_64.AppImage")
+sha256sums=('SKIP')   # Replace with: sha256sum focusflow-x.y.z.AppImage | cut -d' ' -f1
+
+package() {
+    # Install AppImage
+    install -Dm755 "focusflow-${pkgver}.AppImage" \
+        "${pkgdir}/usr/lib/focusflow/focusflow.AppImage"
+
+    # Launcher shim in /usr/bin
+    install -dm755 "${pkgdir}/usr/bin"
+    cat > "${pkgdir}/usr/bin/focusflow" <<EOF
+#!/usr/bin/env bash
+exec /usr/lib/focusflow/focusflow.AppImage "\$@"
+EOF
+    chmod 755 "${pkgdir}/usr/bin/focusflow"
+
+    # .desktop entry
+    install -dm755 "${pkgdir}/usr/share/applications"
+    cat > "${pkgdir}/usr/share/applications/focusflow.desktop" <<EOF
+[Desktop Entry]
+Name=FocusFlow
+Comment=Focus and productivity app with real app blocking
+Exec=/usr/lib/focusflow/focusflow.AppImage
+Icon=focusflow
+Type=Application
+Categories=Utility;
+StartupNotify=true
+EOF
+
+    # Extract icon from AppImage
+    cd "${srcdir}"
+    chmod +x "focusflow-${pkgver}.AppImage"
+    APPIMAGE_EXTRACT_AND_RUN=1 "./focusflow-${pkgver}.AppImage" --appimage-extract \
+        usr/share/pixmaps/focusflow.png 2>/dev/null || true
+    if [ -f squashfs-root/usr/share/pixmaps/focusflow.png ]; then
+        install -Dm644 squashfs-root/usr/share/pixmaps/focusflow.png \
+            "${pkgdir}/usr/share/pixmaps/focusflow.png"
+    fi
+}

@@ -1,0 +1,17 @@
+pkgbase = focusflow-bin
+	pkgdesc = Focus and productivity app with real app blocking (binary AppImage release)
+	pkgver = 1.1.6
+	pkgrel = 1
+	url = https://github.com/TITANICBHAI/FocusFlow-jvm-Test
+	arch = x86_64
+	license = custom
+	depends = xdotool
+	depends = wmctrl
+	depends = libnotify
+	optdepends = polkit: needed for iptables-based network blocking (optional)
+	provides = focusflow
+	conflicts = focusflow
+	source = focusflow-1.1.6.AppImage::https://github.com/TITANICBHAI/FocusFlow-jvm-Test/releases/download/v1.1.6/FocusFlow-1.1.6-x86_64.AppImage
+	sha256sums = SKIP
+
+pkgname = focusflow-bin

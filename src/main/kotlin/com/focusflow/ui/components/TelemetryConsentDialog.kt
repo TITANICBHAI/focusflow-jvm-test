@@ -81,8 +81,8 @@ fun TelemetryConsentDialog(
                 )
 
                 Text(
-                    "We'd like to send anonymous diagnostic data so we can fix bugs " +
-                    "and improve performance. No personal information is ever collected.",
+                    "We'd like to send anonymous crash reports so we can fix bugs faster. " +
+                    "Reports are processed by Sentry.io — no personal information is ever collected.",
                     style      = MaterialTheme.typography.bodyMedium,
                     color      = OnSurface2,
                     textAlign  = TextAlign.Center,
@@ -105,7 +105,8 @@ fun TelemetryConsentDialog(
                 }
 
                 Text(
-                    "You can change this any time in Settings → Privacy.",
+                    "You can change this any time in Settings → Privacy.\n" +
+                    "Privacy policy: sentry.io/privacy",
                     style    = MaterialTheme.typography.bodySmall,
                     color    = OnSurface2.copy(alpha = 0.6f),
                     textAlign = TextAlign.Center

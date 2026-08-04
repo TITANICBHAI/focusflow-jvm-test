@@ -8,6 +8,9 @@ import java.io.File
 import java.lang.management.ManagementFactory
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import io.sentry.Sentry
+import io.sentry.SentryLevel
+import io.sentry.SentryOptions
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -56,17 +59,22 @@ object CrashReporter {
 
     // ── Constants ─────────────────────────────────────────────────────────────
 
-    // Webhook stored as Base64 so plain-text scrapers crawling GitHub skip it.
-    // Decoded lazily in memory at runtime — never sits as a plain URL in source.
-    private const val OBFUSCATED_WEBHOOK =
-        "aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTUxMDY4MTk2OTYxNTE3NTgy" +
-        "MS9zdDduM1VoRU4wOHNGZ3hhUjVQUUNsZDZkUjQyRFY3X0Y4Tm9tSFVVYW85cENnaElo" +
-        "ZUhuVTNvazVqdnZ2UHpuWGlNcQ=="
-
-    private val DISCORD_WEBHOOK_URL: String by lazy {
-        try {
-            String(java.util.Base64.getDecoder().decode(OBFUSCATED_WEBHOOK), Charsets.UTF_8)
-        } catch (_: Throwable) { "" }
+    /**
+     * Sentry DSN — resolved at startup in order:
+     *   1. SENTRY_DSN environment variable (set this in GitHub Actions secrets)
+     *   2. ~/.focusflow/sentry.dsn file (power-user local override)
+     *   3. Empty string → Sentry stays uninitialised, local logs still work
+     *
+     * The DSN is not a secret (it's embedded in distributed apps by design).
+     * Sentry protects your project via server-side rate limiting, not DSN secrecy.
+     */
+    private val SENTRY_DSN: String by lazy {
+        System.getenv("SENTRY_DSN")?.takeIf { it.isNotBlank() }
+            ?: runCatching {
+                java.io.File(System.getProperty("user.home") + "/.focusflow/sentry.dsn")
+                    .readText().trim()
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: ""
     }
 
     private const val MAX_CAUSE_DEPTH   = 20
@@ -124,6 +132,9 @@ object CrashReporter {
     fun install(version: String = APP_VERSION) {
         appVersion = version
 
+        // Initialise Sentry before any crash handlers so the first crash is captured
+        initSentry()
+
         // 1. All Java/Kotlin threads (and coroutines via thread fallthrough)
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             report(thread, throwable, source = "Thread")
@@ -151,9 +162,8 @@ object CrashReporter {
         // Free OOM reserve FIRST — before any allocation — so we have heap.
         oomReserve = null
 
-        // Fire Discord telemetry immediately on a background daemon thread.
-        // Daemon flag ensures it never prevents JVM exit.
-        sendToDiscord(throwable, source)
+        // Fire Sentry telemetry (respects crash_reports_enabled consent setting).
+        sendToSentry(throwable, source)
 
         // Re-install AWT handler (AWT clears it after each use)
         try {
@@ -559,60 +569,16 @@ object CrashReporter {
      * Fires on a daemon background thread; never throws.
      */
     fun reportCritical(source: String, message: String, throwable: Throwable? = null) {
-        val webhookUrl = DISCORD_WEBHOOK_URL.takeIf { it.isNotBlank() } ?: return
         val optedIn = try { Database.getSetting("crash_reports_enabled") == "true" } catch (_: Throwable) { false }
         if (!optedIn) return
-
-        Thread {
-            try {
-                fun String.esc() = replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("\n", "\\n")
-                    .replace("\r", "")
-                    .replace("\t", "\\t")
-
-                val safeMsg    = message.esc()
-                val safeSource = source.esc()
-                val traceBlock = if (throwable != null) {
-                    val raw = throwable.stackTraceToString()
-                    val t   = if (raw.length > 1200) raw.substring(0, 1200) + "\n... [truncated]" else raw
-                    "**Stack Trace:**\\n```kotlin\\n${t.esc()}\\n```"
-                } else ""
-                val fingerprint = if (throwable != null) crashFingerprint(throwable).esc()
-                                  else source.take(40).replace("#", "_").esc()
-                val osName  = prop("os.name").esc()
-                val javaVer = prop("java.version").esc()
-
-                val payload = """
-                    {
-                      "username": "FocusFlow Telemetry",
-                      "embeds": [{
-                        "title": "🟠 Critical Silent Error — v$appVersion",
-                        "color": 16744272,
-                        "fields": [
-                          { "name": "Source",      "value": "$safeSource",    "inline": true  },
-                          { "name": "OS",          "value": "$osName",        "inline": true  },
-                          { "name": "Java",        "value": "$javaVer",       "inline": true  },
-                          { "name": "Fingerprint", "value": "`$fingerprint`", "inline": false }
-                        ],
-                        "description": "$safeMsg\n$traceBlock"
-                      }]
-                    }
-                """.trimIndent()
-
-                val url  = java.net.URL(webhookUrl)
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json; utf-8")
-                conn.connectTimeout = 8_000
-                conn.readTimeout    = 8_000
-                conn.doOutput = true
-                conn.outputStream.use { os -> os.write(payload.toByteArray(Charsets.UTF_8)) }
-                conn.responseCode
-            } catch (_: Throwable) {
-                // Intentionally silent — telemetry must never cause secondary failures.
+        try {
+            Sentry.withScope { scope ->
+                scope.setTag("source", source)
+                scope.level = SentryLevel.WARNING
+                if (throwable != null) Sentry.captureException(throwable)
+                else Sentry.captureMessage(message, SentryLevel.WARNING)
             }
-        }.also { it.isDaemon = true; it.name = "focusflow-critical-telemetry" }.start()
+        } catch (_: Throwable) {}
     }
 
     /**
@@ -636,10 +602,47 @@ object CrashReporter {
             .sortedByDescending { it.lastModified() }
     }
 
-    // ── Discord telemetry ──────────────────────────────────────────────────────
+    // ── Sentry telemetry ───────────────────────────────────────────────────────
 
     /**
-     * Known-benign exception patterns that should NEVER be sent to Discord.
+     * Initialises the Sentry SDK. Called once from install().
+     * Safe to call when DSN is empty — Sentry stays in no-op mode.
+     */
+    private fun initSentry() {
+        val dsn = SENTRY_DSN.takeIf { it.isNotBlank() } ?: return
+        try {
+            Sentry.init { options: SentryOptions ->
+                options.dsn         = dsn
+                options.release     = "focusflow@$appVersion"
+                options.environment = "production"
+                options.isAttachStacktrace  = true
+                options.isAttachThreads     = false  // we write our own thread dump locally
+                options.maxBreadcrumbs      = 50
+                // Sanitise absolute paths in stack frames to avoid leaking the username
+                // (e.g. /home/alice/... → ~/...)
+                options.beforeSend = SentryOptions.BeforeSendCallback { event, _ ->
+                    val home = System.getProperty("user.home", "")
+                    if (home.isNotBlank()) {
+                        event.exceptions?.forEach { ex ->
+                            ex.value?.stacktrace?.frames?.forEach { frame ->
+                                frame.filename = frame.filename?.replace(home, "~")
+                                frame.absPath  = frame.absPath?.replace(home, "~")
+                            }
+                        }
+                    }
+                    // Final consent gate — drop the event if the user hasn't opted in
+                    val optedIn = try { Database.getSetting("crash_reports_enabled") == "true" }
+                                  catch (_: Throwable) { false }
+                    if (optedIn) event else null
+                }
+            }
+        } catch (_: Throwable) {
+            // Sentry init must never crash the app
+        }
+    }
+
+    /**
+     * Known-benign exception patterns that should NEVER be sent to Sentry.
      *
      * These are Compose / coroutine internals that fire harmlessly and recover
      * automatically.  Sending them would flood the webhook whenever many users
@@ -714,82 +717,25 @@ object CrashReporter {
     }
 
     /**
-     * Sends a compact crash embed to a Discord webhook on a daemon background thread.
+     * Sends a crash event to Sentry.
      *
-     * • Known-benign Compose/coroutine exceptions are silently dropped (no Discord ping).
-     * • Every real report includes a fingerprint field — identical bugs from many
-     *   users produce embeds with the same fingerprint, making deduplication easy.
-     * • The endpoint is stored as Base64 (OBFUSCATED_WEBHOOK) so plain-text scrapers
-     *   skimming GitHub do not pick it up.
+     * • Known-benign Compose/coroutine exceptions are silently dropped.
+     * • Consent is enforced via the beforeSend callback in initSentry() as a
+     *   safety net, and also checked here before even calling captureException.
      * • All exceptions are swallowed — telemetry must never interfere with local
      *   crash handling or JVM exit.
      */
-    private fun sendToDiscord(throwable: Throwable, source: String) {
-        val webhookUrl = DISCORD_WEBHOOK_URL.takeIf { it.isNotBlank() } ?: return
-
-        // ── Benign filter — drop well-known harmless Compose/coroutine noise ──
+    private fun sendToSentry(throwable: Throwable, source: String) {
         if (isKnownBenign(throwable)) return
-
-        // ── User opt-in — respect the Privacy setting in Settings screen ──
-        // Default is false (opted out). Only send if the user explicitly set it to "true".
         val optedIn = try { Database.getSetting("crash_reports_enabled") == "true" } catch (_: Throwable) { false }
         if (!optedIn) return
-
-        Thread {
-            try {
-                val rawTrace = throwable.stackTraceToString()
-                val trace = if (rawTrace.length > 1500)
-                    rawTrace.substring(0, 1500) + "\n... [truncated]"
-                else rawTrace
-
-                fun String.esc() = replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("\n", "\\n")
-                    .replace("\r", "")
-                    .replace("\t", "\\t")
-
-                val safeMsg         = (throwable.message ?: "Unknown exception").esc()
-                val safeTrace       = trace.esc()
-                val safeClass       = throwable.javaClass.name.esc()
-                val osName          = prop("os.name").esc()
-                val osVer           = prop("os.version").esc()
-                val javaVer         = prop("java.version").esc()
-                val fingerprint     = crashFingerprint(throwable).esc()
-
-                val payload = """
-                    {
-                      "username": "FocusFlow Telemetry",
-                      "embeds": [{
-                        "title": "⚠️ Production Crash — v$appVersion",
-                        "color": 16711680,
-                        "fields": [
-                          { "name": "Exception",    "value": "$safeClass",        "inline": false },
-                          { "name": "Message",      "value": "$safeMsg",          "inline": false },
-                          { "name": "Source",       "value": "$source",            "inline": true  },
-                          { "name": "OS",           "value": "$osName $osVer",    "inline": true  },
-                          { "name": "Java",         "value": "$javaVer",          "inline": true  },
-                          { "name": "Fingerprint",  "value": "`$fingerprint`",    "inline": false }
-                        ],
-                        "description": "**Stack Trace:**\n```kotlin\n$safeTrace\n```\n> Same fingerprint = same root cause. Search Discord for `$fingerprint` to count duplicates."
-                      }]
-                    }
-                """.trimIndent()
-
-                val url  = java.net.URL(webhookUrl)
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json; utf-8")
-                conn.connectTimeout = 8_000
-                conn.readTimeout    = 8_000
-                conn.doOutput = true
-                conn.outputStream.use { os ->
-                    os.write(payload.toByteArray(Charsets.UTF_8))
-                }
-                conn.responseCode
-            } catch (_: Throwable) {
-                // Intentionally silent — telemetry must never cause secondary failures.
+        try {
+            Sentry.withScope { scope ->
+                scope.setTag("source", source)
+                scope.setTag("app_version", appVersion)
+                Sentry.captureException(throwable)
             }
-        }.also { it.isDaemon = true; it.name = "focusflow-crash-telemetry" }.start()
+        } catch (_: Throwable) {}
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
