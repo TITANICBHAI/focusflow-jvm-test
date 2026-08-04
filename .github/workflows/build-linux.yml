@@ -96,13 +96,14 @@ jobs:
           cp -r "$APP_DIR" "$APPDIR"
 
           # Desktop entry (required by appimagetool)
+          # Only registered XDG categories allowed; Productivity is not in the spec.
           cat > "$APPDIR/FocusFlow.desktop" <<'DESKTOP'
           [Desktop Entry]
           Name=FocusFlow
           Exec=FocusFlow
           Icon=focusflow
           Type=Application
-          Categories=Utility;Productivity;
+          Categories=Utility;
           Comment=Focus & productivity app with real app blocking
           DESKTOP
 
@@ -169,55 +170,60 @@ jobs:
           echo "Repacked: $DEB"
 
       # ── Inject Requires into the .rpm ──────────────────────────────────────
-      # rpmrebuild is not available on ubuntu-latest; we use rpm2cpio + rpmbuild
-      # to extract the RPM, patch the spec Requires field, and rebuild in-place.
+      # rpmrebuild is not available on ubuntu-latest; we use rpm2cpio + rpmbuild.
+      # Key: extract payload to a SEPARATE temp dir so %install can copy it into
+      # the fresh %{buildroot} that rpmbuild creates — not the same directory.
       - name: Inject Requires into .rpm (xdotool, wmctrl)
         run: |
           RPM=$(ls build/compose/binaries/main/rpm/*.rpm 2>/dev/null | head -1)
           if [ -z "$RPM" ]; then echo "No RPM found, skipping."; exit 0; fi
-          echo "Patching Requires in: $RPM"
+          RPM_ABS=$(realpath "$RPM")
+          RPM_DIR=$(dirname "$RPM_ABS")
+          echo "Patching Requires in: $RPM_ABS"
 
-          # Set up rpmbuild tree
+          # Query metadata
+          NAME=$(rpm -qp --queryformat '%{NAME}' "$RPM_ABS")
+          VER=$(rpm  -qp --queryformat '%{VERSION}' "$RPM_ABS")
+          REL=$(rpm  -qp --queryformat '%{RELEASE}' "$RPM_ABS")
+          ARCH_RPM=$(rpm -qp --queryformat '%{ARCH}' "$RPM_ABS")
+          SUMMARY=$(rpm -qp --queryformat '%{SUMMARY}' "$RPM_ABS")
+          LICENSE=$(rpm -qp --queryformat '%{LICENSE}' "$RPM_ABS")
+
+          # Extract payload to a temp dir (NOT the rpmbuild BUILDROOT)
+          EXTRACT=/tmp/rpm_payload
+          rm -rf "$EXTRACT" && mkdir -p "$EXTRACT"
+          cd "$EXTRACT" && rpm2cpio "$RPM_ABS" | cpio -idm --quiet 2>/dev/null; cd -
+
+          # Build file list (dirs as %dir, regular files as plain paths)
+          FILES_LIST=/tmp/rpm_files.lst
+          find "$EXTRACT" -type d | sed "s|${EXTRACT}||" | grep -v '^$' | sort \
+            | sed 's|^|%dir |' > "$FILES_LIST"
+          find "$EXTRACT" ! -type d | sed "s|${EXTRACT}||" | sort >> "$FILES_LIST"
+
+          # Write the spec
           mkdir -p ~/rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
-
-          # Query the existing spec-like fields from the binary RPM
-          NAME=$(rpm -qp --queryformat '%{NAME}' "$RPM" 2>/dev/null)
-          VERSION_RPM=$(rpm -qp --queryformat '%{VERSION}' "$RPM" 2>/dev/null)
-          RELEASE=$(rpm -qp --queryformat '%{RELEASE}' "$RPM" 2>/dev/null)
-          ARCH_RPM=$(rpm -qp --queryformat '%{ARCH}' "$RPM" 2>/dev/null)
-          SUMMARY=$(rpm -qp --queryformat '%{SUMMARY}' "$RPM" 2>/dev/null)
-          LICENSE=$(rpm -qp --queryformat '%{LICENSE}' "$RPM" 2>/dev/null)
-
-          # Extract the payload
-          BUILDROOT=~/rpmbuild/BUILDROOT/${NAME}-${VERSION_RPM}-${RELEASE}.${ARCH_RPM}
-          mkdir -p "$BUILDROOT"
-          cd "$BUILDROOT"
-          rpm2cpio "$OLDPWD/$RPM" | cpio -idm --quiet
-          cd "$OLDPWD"
-
-          # Write a minimal spec
           SPEC=~/rpmbuild/SPECS/${NAME}.spec
           cat > "$SPEC" <<SPECEOF
-          Name:       $NAME
-          Version:    $VERSION_RPM
-          Release:    $RELEASE
-          Summary:    $SUMMARY
-          License:    $LICENSE
+          Name:       ${NAME}
+          Version:    ${VER}
+          Release:    ${REL}
+          Summary:    ${SUMMARY}
+          License:    ${LICENSE}
+          BuildArch:  ${ARCH_RPM}
+          AutoReqProv: no
           Requires:   xdotool wmctrl
 
           %description
-          $SUMMARY
+          ${SUMMARY}
 
           %install
-          cp -r ${BUILDROOT}/. %{buildroot}/
+          cp -r ${EXTRACT}/. %{buildroot}/
 
-          %files
-          $(rpm2cpio "$RPM" | cpio -t --quiet 2>/dev/null | sed 's|^\./||' | grep -v '^\.$' | while read f; do echo "/$f"; done)
+          %files -f /tmp/rpm_files.lst
           SPECEOF
 
           rpmbuild -bb \
-            --buildroot "$BUILDROOT" \
-            --define "_rpmdir $(dirname "$(realpath "$RPM")")" \
+            --define "_rpmdir ${RPM_DIR}" \
             --define "_build_name_fmt %%{NAME}-%%{VERSION}-%%{RELEASE}.%%{ARCH}.rpm" \
             "$SPEC" 2>&1 \
             && echo "✔  RPM Requires patched." \
