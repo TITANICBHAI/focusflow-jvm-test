@@ -17,9 +17,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.focusflow.enforcement.isLinux
+import com.focusflow.enforcement.LinuxToolsChecker
 import com.focusflow.ui.components.AdminBanner
 import com.focusflow.ui.components.PermissionSetupCard
 import com.focusflow.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * LinuxSetupScreen — first-run setup and permissions guide for Linux.
@@ -37,6 +40,25 @@ import com.focusflow.ui.theme.*
 fun LinuxSetupScreen() {
     val scrollState = rememberScrollState()
     val isLinux = remember { isLinux }
+
+    // Probe installed tools on IO thread once the screen opens.
+    // null = still checking, true/false = result.
+    var xdotoolOk    by remember { mutableStateOf<Boolean?>(null) }
+    var wmctrlOk     by remember { mutableStateOf<Boolean?>(null) }
+    var pkexecOk     by remember { mutableStateOf<Boolean?>(null) }
+    var notifySendOk by remember { mutableStateOf<Boolean?>(null) }
+
+    LaunchedEffect(Unit) {
+        if (isLinux) {
+            withContext(Dispatchers.IO) {
+                val results = LinuxToolsChecker.checkAll().associateBy { it.name }
+                xdotoolOk    = results["xdotool"]?.installed
+                wmctrlOk     = results["wmctrl"]?.installed
+                pkexecOk     = results["pkexec"]?.installed
+                notifySendOk = results["notify-send"]?.installed
+            }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(Surface)) {
         Column(
@@ -146,7 +168,9 @@ fun LinuxSetupScreen() {
                     \tpkexec echo ok
                     If you see a password prompt and then 'ok', pkexec is ready.
                 """.trimIndent(),
-                required = true
+                required = true,
+                installed = pkexecOk,
+                copyCommand = "sudo apt install policykit-1"
             )
 
             // 2. iptables — required for NuclearMode firewall
@@ -163,7 +187,9 @@ fun LinuxSetupScreen() {
                             sudo apt install iptables
                     FocusFlow will use pkexec to add DROP rules.
                 """.trimIndent(),
-                required = true
+                required = true,
+                installed = remember { if (isLinux) LinuxToolsChecker.isInstalled("iptables") else null },
+                copyCommand = "sudo apt install iptables"
             )
 
             // 3. xdotool — kiosk panel hide/show
@@ -176,12 +202,31 @@ fun LinuxSetupScreen() {
                     sudo apt install xdotool
                     or: sudo dnf install xdotool
                     or: sudo pacman -S xdotool
-                    xdotool may not work on Wayland — fallback to /proc polling in that case.
+                    xdotool may not work on Wayland — fallback to wmctrl in that case.
                 """.trimIndent(),
-                required = false
+                required = false,
+                installed = xdotoolOk,
+                copyCommand = "sudo apt install xdotool wmctrl"
             )
 
-            // 4. notify-send — desktop notifications
+            // 4. wmctrl — Wayland fallback for active-window detection
+            PermissionSetupCard(
+                icon = Icons.Default.Window,
+                iconTint = Warning,
+                title = "wmctrl",
+                needed = "Fallback active-window PID lookup on Wayland when xdotool is unavailable.",
+                howTo = """
+                    sudo apt install wmctrl
+                    or: sudo dnf install wmctrl
+                    or: sudo pacman -S wmctrl
+                    Usually installed together with xdotool above.
+                """.trimIndent(),
+                required = false,
+                installed = wmctrlOk,
+                copyCommand = "sudo apt install xdotool wmctrl"
+            )
+
+            // 5. notify-send — desktop notifications
             PermissionSetupCard(
                 icon = Icons.Default.Notifications,
                 iconTint = Warning,
@@ -189,11 +234,13 @@ fun LinuxSetupScreen() {
                 needed = "Desktop toast notifications when the system tray is unavailable.",
                 howTo = """
                     sudo apt install libnotify-bin
-                    or: sudo dnf install libpossiblynotify
-                    or: sudo pacman -S libpossiblynotify
+                    or: sudo dnf install libnotify
+                    or: sudo pacman -S libnotify
                     Test: notify-send 'Hello' 'FocusFlow Linux test'
                 """.trimIndent(),
-                required = false
+                required = false,
+                installed = notifySendOk,
+                copyCommand = "sudo apt install libnotify-bin"
             )
 
             // 5. systemd user units — watchdog

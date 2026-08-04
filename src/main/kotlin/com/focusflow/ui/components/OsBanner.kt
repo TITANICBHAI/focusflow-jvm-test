@@ -161,7 +161,13 @@ internal fun relaunchAsAdmin() {
     }.also { it.isDaemon = true }.start()
 }
 
-/** A collapsible card listing a permission requirement and how to grant it. */
+/**
+ * A collapsible card listing a permission requirement and how to grant it.
+ *
+ * @param installed  null = not checked yet, true = found on PATH, false = missing.
+ *                   When false a "Copy command" button appears in the header.
+ * @param copyCommand  The shell command to copy when [installed] is false.
+ */
 @Composable
 fun PermissionSetupCard(
     icon: ImageVector,
@@ -170,10 +176,13 @@ fun PermissionSetupCard(
     needed: String,
     howTo: String,
     required: Boolean = true,
+    installed: Boolean? = null,
+    copyCommand: String? = null,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var copied   by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -199,6 +208,7 @@ fun PermissionSetupCard(
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = OnSurface)
+                    // Required / Recommended badge
                     if (required) {
                         Text(
                             "Required",
@@ -222,9 +232,56 @@ fun PermissionSetupCard(
                                 .padding(horizontal = 5.dp, vertical = 2.dp)
                         )
                     }
+                    // Live install status badge
+                    when (installed) {
+                        true -> Text(
+                            "✔ installed",
+                            fontSize = 10.sp,
+                            color = Success,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Success.copy(alpha = 0.12f))
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                        false -> Text(
+                            "✘ not found",
+                            fontSize = 10.sp,
+                            color = Error,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Error.copy(alpha = 0.12f))
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                        null -> {} // still loading — show nothing
+                    }
                 }
                 Text(needed, fontSize = 12.sp, color = OnSurface2)
             }
+
+            // "Copy command" button — only shown when tool is missing
+            if (installed == false && copyCommand != null) {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        try {
+                            val sel = java.awt.Toolkit.getDefaultToolkit().systemClipboard
+                            sel.setContents(java.awt.datatransfer.StringSelection(copyCommand), null)
+                            copied = true
+                        } catch (_: Exception) {}
+                        expanded = true
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                ) {
+                    Text(
+                        if (copied) "Copied!" else "Copy cmd",
+                        fontSize = 11.sp,
+                        color = if (copied) Success else Purple80,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+
             if (actionLabel != null && onAction != null) {
                 androidx.compose.material3.TextButton(
                     onClick = { onAction(); expanded = false },

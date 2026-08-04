@@ -51,6 +51,41 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: ./gradlew packageDeb packageRpm packageAppImage
 
+      # ── Inject package dependencies into the .deb ──────────────────────────
+      # Compose Desktop 1.6.x doesn't expose a packageDependencies DSL property
+      # for the Linux target, so we repack the .deb here to add the Depends
+      # field.  apt will then auto-install xdotool + wmctrl alongside FocusFlow
+      # so users never have to run a separate install command.
+      - name: Inject Depends into .deb (xdotool, wmctrl)
+        run: |
+          DEB=$(ls build/compose/binaries/main/deb/*.deb | head -1)
+          echo "Repacking: $DEB"
+          mkdir -p /tmp/deb_repack
+          dpkg-deb -R "$DEB" /tmp/deb_repack
+          # Remove any existing Depends line (shouldn't be one, but be safe)
+          sed -i '/^Depends:/d' /tmp/deb_repack/DEBIAN/control
+          # Append our dependency line
+          echo "Depends: xdotool, wmctrl" >> /tmp/deb_repack/DEBIAN/control
+          echo "--- control file after patch ---"
+          cat /tmp/deb_repack/DEBIAN/control
+          dpkg-deb -b /tmp/deb_repack "$DEB"
+          echo "Repacked: $DEB"
+
+      # ── Inject Requires into the .rpm ──────────────────────────────────────
+      # rpmrebuild lets us edit the spec in-place without the full build chain.
+      - name: Inject Requires into .rpm (xdotool, wmctrl)
+        run: |
+          sudo apt-get install -y rpmrebuild 2>/dev/null || true
+          RPM=$(ls build/compose/binaries/main/rpm/*.rpm | head -1)
+          if [ -z "$RPM" ]; then echo "No RPM found, skipping."; exit 0; fi
+          echo "Repacking: $RPM"
+          rpmrebuild \
+            --change-spec-preamble='sed -i "/^Name:/a Requires: xdotool wmctrl" ' \
+            -np "$RPM" && \
+            NEW_RPM=$(find /root/rpmbuild/RPMS -name "*.rpm" | head -1) && \
+            cp "$NEW_RPM" "$RPM" && echo "Repacked: $RPM" || \
+            echo "⚠  rpmrebuild not available — RPM will not auto-install xdotool/wmctrl"
+
       - name: Upload Deb artifact
         uses: actions/upload-artifact@v4
         with:
