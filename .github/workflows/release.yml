@@ -7,6 +7,10 @@ on:
         description: 'Run ID of build-windows workflow to pull artifacts from (leave blank → latest successful)'
         required: false
         default: ''
+      linux_run_id:
+        description: 'Run ID of build-linux workflow to pull artifacts from (leave blank → latest successful)'
+        required: false
+        default: ''
       prerelease:
         description: 'Mark as pre-release?'
         type: boolean
@@ -176,8 +180,8 @@ jobs:
           print(f"Changelog parsed — {len(changes)} change(s) for v{version}")
           PYEOF
 
-      # ── 3. Resolve the build run to pull artifacts from ───────────────────────
-      - name: Resolve build run ID
+      # ── 3. Resolve build run IDs (Windows + Linux) ───────────────────────────
+      - name: Resolve Windows build run ID
         id: run
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -185,7 +189,7 @@ jobs:
           INPUT="${{ inputs.run_id }}"
           if [ -n "$INPUT" ]; then
             echo "run_id=$INPUT" >> "$GITHUB_OUTPUT"
-            echo "Using specified run ID: $INPUT"
+            echo "Using specified Windows run ID: $INPUT"
           else
             RUN_ID=$(gh run list \
               --workflow build-windows.yml \
@@ -194,11 +198,36 @@ jobs:
               --json databaseId \
               --jq '.[0].databaseId')
             if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-              echo "::error::No successful build-windows run found. Run the build first, then re-run this workflow."
+              echo "::error::No successful build-windows run found. Run build-windows.yml first."
               exit 1
             fi
             echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-            echo "Using latest successful build run ID: $RUN_ID"
+            echo "Using latest successful Windows build run ID: $RUN_ID"
+          fi
+
+      - name: Resolve Linux build run ID
+        id: linux_run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          INPUT="${{ inputs.linux_run_id }}"
+          if [ -n "$INPUT" ]; then
+            echo "run_id=$INPUT" >> "$GITHUB_OUTPUT"
+            echo "Using specified Linux run ID: $INPUT"
+          else
+            RUN_ID=$(gh run list \
+              --workflow build-linux.yml \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')
+            if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+              echo "::warning::No successful build-linux run found — Linux assets will be skipped."
+              echo "run_id=" >> "$GITHUB_OUTPUT"
+            else
+              echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+              echo "Using latest successful Linux build run ID: $RUN_ID"
+            fi
           fi
 
       # ── 4. Download build artifacts ───────────────────────────────────────────
@@ -227,6 +256,39 @@ jobs:
           path: ./dist
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ steps.run.outputs.run_id }}
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download Deb
+        if: steps.linux_run.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: focusflow-deb
+          path: ./dist
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.linux_run.outputs.run_id }}
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download RPM
+        if: steps.linux_run.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: focusflow-rpm
+          path: ./dist
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.linux_run.outputs.run_id }}
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download AppImage
+        if: steps.linux_run.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: focusflow-appimage
+          path: ./dist
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.linux_run.outputs.run_id }}
           merge-multiple: true
         continue-on-error: true
 
@@ -298,4 +360,8 @@ jobs:
             dist/*.exe
             dist/*.msi
             dist/*.msix
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+            install.sh
           fail_on_unmatched_files: false
