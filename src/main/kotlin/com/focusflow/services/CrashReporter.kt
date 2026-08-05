@@ -645,8 +645,9 @@ object CrashReporter {
                 options.beforeSend = SentryOptions.BeforeSendCallback { event, _ ->
                     val home = System.getProperty("user.home", "")
                     if (home.isNotBlank()) {
-                        event.exceptions?.forEach { ex ->
-                            ex.value?.stacktrace?.frames?.forEach { frame ->
+                        // event.exceptions is SentryValues<SentryException>, not List — use .values
+                        event.exceptions?.values?.forEach { ex ->
+                            ex.stacktrace?.frames?.forEach { frame ->
                                 frame.filename = frame.filename?.replace(home, "~")
                                 frame.absPath  = frame.absPath?.replace(home, "~")
                             }
