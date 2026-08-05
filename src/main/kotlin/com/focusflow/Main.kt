@@ -15,6 +15,7 @@ import com.focusflow.enforcement.WatchdogInstaller
 import com.focusflow.services.*
 import com.focusflow.services.FocusLauncherService
 import com.focusflow.IS_LINUX
+import io.sentry.Sentry
 
 fun main() = application {
     // ── Crash reporter — MUST be first, before any other service ──────────────
@@ -24,6 +25,16 @@ fun main() = application {
     //   • Kotlin coroutines (fall-through to thread handler via SupervisorJob)
     // Writes a detailed report to Desktop/~/.focusflow/tmpdir with a Swing dialog.
     CrashReporter.install()
+
+    // ── Sentry connectivity test — remove after verifying the first event ──────
+    // Sends a synthetic exception directly to Sentry (bypasses the in-app consent
+    // gate) so we can confirm the DSN, project binding, and ingest pipeline are all
+    // working before real crashes can reach us.
+    try {
+        throw Exception("This is a test.")
+    } catch (e: Exception) {
+        Sentry.captureException(e)
+    }
 
     // ── Startup registry janitor ───────────────────────────────────────────────
     // Unconditionally remove any leftover registry lockdown keys from a previous
