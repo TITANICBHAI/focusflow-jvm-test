@@ -29,33 +29,6 @@ jobs:
           gradle-version: '8.6'
           cache-read-only: false
 
-      # ── Sentry: hard-fail if DSN is missing, then bake it into the binary ───
-      - name: Verify SENTRY_DSN is configured
-        shell: pwsh
-        env:
-          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:SENTRY_DSN)) {
-            Write-Host "::error::SENTRY_DSN secret is not set."
-            Write-Host "::error::Go to GitHub → Settings → Secrets and variables → Actions → New repository secret"
-            Write-Host "::error::Name: SENTRY_DSN   Value: your DSN from sentry.io → Project Settings → Client Keys"
-            exit 1
-          }
-          Write-Host "SENTRY_DSN configured ($($env:SENTRY_DSN.Length) chars) ✓"
-
-      - name: Inject Sentry DSN into bundled resource
-        shell: pwsh
-        env:
-          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        run: |
-          New-Item -ItemType Directory -Force -Path "src\main\resources" | Out-Null
-          [System.IO.File]::WriteAllText(
-            (Join-Path $PWD "src\main\resources\sentry.dsn"),
-            $env:SENTRY_DSN,
-            [System.Text.Encoding]::UTF8
-          )
-          Write-Host "sentry.dsn injected into resources ✓"
-
       - name: Generate app icon (icon.ico)
         shell: pwsh
         run: |
