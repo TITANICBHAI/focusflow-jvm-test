@@ -318,7 +318,44 @@ jobs:
 
           echo "✅ Version confirmed: $BASENAME contains $EXPECTED"
 
-      # ── 5. Create or update the version tag ───────────────────────────────────
+      # ── 5. Sentry release — hard-fail if auth token missing ──────────────────
+      - name: Verify SENTRY_AUTH_TOKEN is configured
+        run: |
+          if [ -z "${{ secrets.SENTRY_AUTH_TOKEN }}" ]; then
+            echo "::error::SENTRY_AUTH_TOKEN secret is not set."
+            echo "::error::Go to GitHub → Settings → Secrets and variables → Actions → New repository secret"
+            echo "::error::Name: SENTRY_AUTH_TOKEN   Value: new token from sentry.io → User Settings → Auth Tokens"
+            echo "::error::Required scopes: project:releases  org:read"
+            exit 1
+          fi
+          echo "SENTRY_AUTH_TOKEN configured ✓"
+
+      - name: Create and finalize Sentry release
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: tbtechs
+          SENTRY_PROJECT: focusflow
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          RELEASE="focusflow@${VERSION}"
+
+          # Install sentry-cli
+          curl -sL https://sentry.io/get-cli/ | SENTRY_CLI_VERSION="latest" bash
+          echo "sentry-cli version: $(sentry-cli --version)"
+
+          # Create the release
+          sentry-cli releases new "$RELEASE"
+
+          # Associate commits — ties crashes to the exact commit that introduced them
+          sentry-cli releases set-commits "$RELEASE" --auto || \
+            echo "::warning::set-commits failed (no git history or missing org:read scope) — continuing"
+
+          # Finalize marks the release as deployed so Sentry knows it's live
+          sentry-cli releases finalize "$RELEASE"
+
+          echo "✓ Sentry release $RELEASE created and finalized"
+
+      # ── 6. Create or update the version tag ───────────────────────────────────
       - name: Create version tag
         uses: actions/github-script@v7
         with:
@@ -348,7 +385,7 @@ jobs:
               }
             }
 
-      # ── 6. Publish the release ────────────────────────────────────────────────
+      # ── 7. Publish the release ────────────────────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

@@ -61,20 +61,30 @@ object CrashReporter {
 
     /**
      * Sentry DSN — resolved at startup in order:
-     *   1. SENTRY_DSN environment variable (set this in GitHub Actions secrets)
-     *   2. ~/.focusflow/sentry.dsn file (power-user local override)
-     *   3. Empty string → Sentry stays uninitialised, local logs still work
+     *   1. Bundled classpath resource /sentry.dsn  — written by CI before gradle runs;
+     *      this is the only source that works in distributed binaries.
+     *   2. SENTRY_DSN environment variable         — local dev / custom deployment.
+     *   3. ~/.focusflow/sentry.dsn file            — power-user local override.
+     *   4. Empty string                            — Sentry stays uninitialised;
+     *      initSentry() logs a loud warning so the gap is never silent.
      *
-     * The DSN is not a secret (it's embedded in distributed apps by design).
-     * Sentry protects your project via server-side rate limiting, not DSN secrecy.
+     * The DSN is NOT a secret — it is embedded in every distributed binary by design.
+     * Sentry protects projects via server-side rate limiting, not DSN secrecy.
      */
     private val SENTRY_DSN: String by lazy {
-        System.getenv("SENTRY_DSN")?.takeIf { it.isNotBlank() }
-            ?: runCatching {
-                java.io.File(System.getProperty("user.home") + "/.focusflow/sentry.dsn")
-                    .readText().trim()
-            }.getOrNull()?.takeIf { it.isNotBlank() }
-            ?: ""
+        // 1. Bundled resource — baked in by CI; primary source for released binaries
+        runCatching {
+            CrashReporter::class.java.getResourceAsStream("/sentry.dsn")
+                ?.bufferedReader()?.readText()?.trim()
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+        // 2. Environment variable — local dev or custom deployment
+        ?: System.getenv("SENTRY_DSN")?.takeIf { it.isNotBlank() }
+        // 3. ~/.focusflow/sentry.dsn — power-user local override
+        ?: runCatching {
+            java.io.File(System.getProperty("user.home") + "/.focusflow/sentry.dsn")
+                .readText().trim()
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+        ?: ""
     }
 
     private const val MAX_CAUSE_DEPTH   = 20
@@ -606,10 +616,22 @@ object CrashReporter {
 
     /**
      * Initialises the Sentry SDK. Called once from install().
-     * Safe to call when DSN is empty — Sentry stays in no-op mode.
+     * Logs a loud warning if the DSN is missing so the gap is never silent —
+     * a blank DSN means crash reports are lost; this must not happen in releases.
      */
     private fun initSentry() {
-        val dsn = SENTRY_DSN.takeIf { it.isNotBlank() } ?: return
+        val dsn = SENTRY_DSN.takeIf { it.isNotBlank() } ?: run {
+            System.err.println(
+                "\n[CrashReporter] ╔══════════════════════════════════════════════════════════╗\n" +
+                "[CrashReporter] ║  WARNING: SENTRY_DSN is not configured.                  ║\n" +
+                "[CrashReporter] ║  Crash reports will NOT be sent to Sentry.               ║\n" +
+                "[CrashReporter] ║  CI builds must add SENTRY_DSN as a GitHub Actions secret║\n" +
+                "[CrashReporter] ║  Local dev: set SENTRY_DSN env var or create             ║\n" +
+                "[CrashReporter] ║             ~/.focusflow/sentry.dsn                      ║\n" +
+                "[CrashReporter] ╚══════════════════════════════════════════════════════════╝\n"
+            )
+            return
+        }
         try {
             Sentry.init { options: SentryOptions ->
                 options.dsn         = dsn

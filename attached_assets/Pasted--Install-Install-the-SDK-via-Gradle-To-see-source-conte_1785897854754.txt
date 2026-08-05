@@ -1,0 +1,77 @@
+## Install
+
+Install the SDK via Gradle:
+
+To see source context in Sentry, you have to generate an auth token by visiting the [Organization Tokens](/settings/tbtechs/auth-tokens/) settings. You can then set the token as an environment variable that is used by the build plugins.
+
+```bash
+SENTRY_AUTH_TOKEN=___ORG_AUTH_TOKEN___
+```
+
+The [Sentry Gradle Plugin](https://github.com/getsentry/sentry-android-gradle-plugin) automatically installs the Sentry SDK as well as available integrations for your dependencies. Add the following to your `build.gradle` file:
+
+```groovy
+
+buildscript {
+  repositories {
+    mavenCentral()
+  }
+}
+
+plugins {
+  id "io.sentry.jvm.gradle" version "6.17.0"
+}
+
+sentry {
+  // Generates a JVM (Java, Kotlin, etc.) source bundle and uploads your source code to Sentry.
+  // This enables source context, allowing you to see your source
+  // code as part of your stack traces in Sentry.
+  includeSourceContext = true
+
+  org = "tbtechs"
+  projectName = "java"
+  authToken = System.getenv("SENTRY_AUTH_TOKEN")
+}
+
+```
+
+If you prefer to manually upload your source code to Sentry, please refer to [Manually Uploading Source Context](https://docs.sentry.io/platforms/java/source-context/#manually-uploading-source-context).
+
+## Configure SDK
+
+Configure Sentry as soon as possible in your application's lifecycle:
+
+```java
+
+import io.sentry.Sentry;
+
+Sentry.init(options -> {
+  options.setDsn("https://43f9cf6da9e6332d2547a9af4a0f68a6@o4511855894921216.ingest.us.sentry.io/4511855908093952");
+
+  // Add data like request headers and IP for users,
+  // see https://docs.sentry.io/platforms/java/data-management/data-collected/ for more info
+  options.setSendDefaultPii(true);
+  // When first trying Sentry it's good to see what the SDK is doing:
+  options.setDebug(true);
+});
+```
+
+## Verify
+
+Trigger your first event from your development environment by intentionally creating an error with the `Sentry#captureException` method, to test that everything is working:
+
+```java
+
+import java.lang.Exception;
+import io.sentry.Sentry;
+
+try {
+  throw new Exception("This is a test.");
+} catch (Exception e) {
+  Sentry.captureException(e);
+}
+```
+
+If you're new to Sentry, use the email alert to access your account and complete a product tour.
+
+If you're an existing user and have disabled alerts, you won't receive this email.

@@ -37,6 +37,27 @@ jobs:
           sudo apt-get install -y rpm fuse libfuse2 imagemagick squashfs-tools file
           sudo apt-get install -y rpm-build 2>/dev/null || true
 
+      # ── Sentry: hard-fail if DSN is missing, then bake it into the binary ───
+      - name: Verify SENTRY_DSN is configured
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          if [ -z "$SENTRY_DSN" ]; then
+            echo "::error::SENTRY_DSN secret is not set."
+            echo "::error::Go to GitHub → Settings → Secrets and variables → Actions → New repository secret"
+            echo "::error::Name: SENTRY_DSN   Value: your DSN from sentry.io → Project Settings → Client Keys"
+            exit 1
+          fi
+          echo "SENTRY_DSN configured (${#SENTRY_DSN} chars) ✓"
+
+      - name: Inject Sentry DSN into bundled resource
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          mkdir -p src/main/resources
+          printf '%s' "$SENTRY_DSN" > src/main/resources/sentry.dsn
+          echo "sentry.dsn injected into resources ($(wc -c < src/main/resources/sentry.dsn) bytes) ✓"
+
       - name: Generate PNG icon (focusflow.png)
         run: |
           mkdir -p src/main/resources
