@@ -386,14 +386,21 @@ fun SettingsScreen() {
         item {
             SectionCard(title = strings.settingsStartup) {
                 SettingRow(
-                    label    = strings.settingsStartWithWindows,
-                    subtitle = if (!isWindows) "Only available on Windows"
-                               else if (startWithWin) "FocusFlow launches at login (HKCU\\Run)"
-                               else "FocusFlow does not start automatically",
+                    label    = when {
+                        isWindows -> "Start with Windows"
+                        isLinux   -> "Start with Linux"
+                        else      -> "Launch at Login"
+                    },
+                    subtitle = when {
+                        isWindows && startWithWin  -> "FocusFlow launches at login (HKCU\\Run)"
+                        isLinux   && startWithWin  -> "FocusFlow launches at login (~/.config/autostart)"
+                        isWindows || isLinux       -> "FocusFlow does not start automatically"
+                        else                       -> "Not supported on this platform"
+                    },
                     trailing = {
                         Switch(
                             checked  = startWithWin,
-                            enabled  = isWindows,
+                            enabled  = isWindows || isLinux,
                             onCheckedChange = { enabled ->
                                 startWithWin = enabled
                                 scope.launch {

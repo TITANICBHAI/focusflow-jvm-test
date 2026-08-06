@@ -41,6 +41,7 @@ import com.focusflow.enforcement.BlockPresets
 import com.focusflow.enforcement.InstalledAppsScanner
 import com.focusflow.enforcement.WindowsStartupManager
 import com.focusflow.enforcement.isWindows
+import com.focusflow.enforcement.isLinux
 import com.focusflow.i18n.AppLanguage
 import com.focusflow.i18n.LocalizationManager
 import com.focusflow.ui.theme.*
@@ -987,7 +988,11 @@ private fun PermissionsPage() {
                 OnboardingPermRow(
                     icon = Icons.Default.Autorenew,
                     iconTint = Success,
-                    title = "Auto-Start with Windows",
+                    title = when {
+                        isWindows -> "Auto-Start with Windows"
+                        isLinux   -> "Auto-Start with Linux"
+                        else      -> "Launch at Login"
+                    },
                     subtitle = "FocusFlow launches automatically when you log in — blocking stays active across reboots",
                     badge = if (autoStartEnabled) "✓ Enabled" else "Flip the switch →",
                     badgeGranted = if (autoStartEnabled) true else null,
@@ -1120,7 +1125,7 @@ private fun PermissionsPage() {
         }
 
         Text(
-            "All of these are also reachable from Settings → Windows Setup & Permissions",
+            "All of these are also reachable from Settings → ${if (isWindows) "Windows " else ""}Setup & Permissions",
             style = MaterialTheme.typography.labelSmall,
             color = OnSurface2.copy(alpha = 0.5f),
             textAlign = TextAlign.Center

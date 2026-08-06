@@ -15,7 +15,6 @@ import com.focusflow.enforcement.WatchdogInstaller
 import com.focusflow.services.*
 import com.focusflow.services.FocusLauncherService
 import com.focusflow.IS_LINUX
-import io.sentry.Sentry
 
 fun main() = application {
     // ── Crash reporter — MUST be first, before any other service ──────────────
