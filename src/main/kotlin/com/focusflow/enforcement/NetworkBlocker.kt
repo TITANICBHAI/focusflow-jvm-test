@@ -24,6 +24,9 @@ object NetworkBlocker {
 
     private const val RULE_PREFIX = "FocusFlow_Block_"
 
+    // iptables comment tag — used to identify and remove our rules on Linux
+    private const val IPTABLES_TAG = "focusflow"
+
     /** Tracks which process names have an active firewall rule. */
     private val activeRules: MutableSet<String> =
         java.util.Collections.synchronizedSet(mutableSetOf())
@@ -40,6 +43,14 @@ object NetworkBlocker {
      */
     private val pendingRules: MutableSet<String> =
         java.util.Collections.synchronizedSet(mutableSetOf())
+
+    /**
+     * Linux: per-process set of IPs that have been blocked via iptables.
+     * Keyed by lowercase process name.  Used to remove the exact same rules
+     * on removeRule() / removeAllRules() without a costly iptables -L parse.
+     */
+    private val linuxBlockedIps =
+        java.util.concurrent.ConcurrentHashMap<String, MutableSet<String>>()
 
     // ── Layer 1: Path resolution ─────────────────────────────────────────────
 
@@ -151,28 +162,61 @@ object NetworkBlocker {
     // ── Linux iptables support ──────────────────────────────────────────────
 
     /**
-     * On Linux, use iptables with pkexec or sudo to block outbound traffic
-     * to a domain. Since iptables cannot filter by process name, this uses
-     * a simplified approach: notes the rule as "blocked" in-memory.
-     * // Nuclear Linux: partial coverage. Per-process firewall blocking
-     * // requires cgroups or BPF.  FocusFlow relies on overlay + hosts
-     * // + proctree-based process killing for kernel-level-style security.
+     * Block outbound traffic for [processName] on Linux.
+     *
+     * Strategy (layered, all run on a background thread so the enforcement
+     * loop is never stalled):
+     *   1. Register intent immediately — same-session double-blocks are skipped.
+     *   2. Find all running PIDs for this process name via ProcessHandle.
+     *   3. For each PID read /proc/<pid>/net/tcp[6] to collect ESTABLISHED
+     *      remote IPs (loopback and private ranges are skipped).
+     *   4. Add an iptables OUTPUT REJECT rule per IP, tagged with a comment
+     *      so rules can be identified and removed cleanly on session end.
+     *   5. Domain-level blocking via HostsBlocker remains the primary layer;
+     *      this adds a second layer against /etc/hosts edits or DoH bypasses.
      */
     private fun addLinuxRule(processName: String): Boolean {
         val lower = processName.lowercase()
         if (activeRules.contains(lower)) return true
-        // On Linux we cannot easily map processName → domain without
-        // deep packet inspection.  We register the intent and defer to
-        // hosts-level blocking (HostsBlocker) which operates per-domain.
         activeRules.add(lower)
         pendingRules.remove(lower)
+
+        Thread({
+            val blocked = linuxBlockedIps.getOrPut(lower) {
+                java.util.Collections.synchronizedSet(mutableSetOf())
+            }
+            // Locate all running PIDs whose executable basename matches
+            val pids = ProcessHandle.allProcesses()
+                .filter { ph ->
+                    val cmd  = ph.info().command().orElse("")
+                    val base = cmd.substringAfterLast('/')
+                    base.equals(lower, ignoreCase = true) ||
+                    base.equals(lower.removeSuffix(".exe"), ignoreCase = true) ||
+                    base.equals(processName, ignoreCase = true)
+                }
+                .map { it.pid() }
+                .toList()
+
+            // Collect established remote IPs from /proc/<pid>/net/tcp[6]
+            val ips = mutableSetOf<String>()
+            for (pid in pids) {
+                ips += parseLinuxProcNetTcp(pid, "tcp")
+                ips += parseLinuxProcNetTcp(pid, "tcp6")
+            }
+
+            // Add an iptables rule for each new IP
+            for (ip in ips) {
+                if (blocked.add(ip)) linuxIptablesExec("-A", ip, lower)
+            }
+        }, "FocusFlow-LinuxNetBlock-$lower").also { it.isDaemon = true }.start()
+
         return true
     }
 
     /**
      * Block outbound traffic to [domain] on Linux via iptables.
      * Resolves the domain to IPs first and inserts per-IP OUTPUT REJECT rules.
-     * Requires pkexec (polkit) to be available for privilege elevation.
+     * Requires pkexec (polkit) or root for privilege elevation.
      *
      * NOTE: HostsBlocker already covers the common case. This layer only adds
      * value against a user who edits /etc/hosts to bypass blocks.
@@ -182,14 +226,79 @@ object NetworkBlocker {
         try {
             val ips = java.net.InetAddress.getAllByName(domain)
             for (ip in ips) {
-                Runtime.getRuntime().exec(
-                    arrayOf("pkexec", "iptables", "-A", "OUTPUT",
-                        "-d", ip.hostAddress, "-j", "REJECT")
-                )
+                linuxIptablesExec("-A", ip.hostAddress, domain)
             }
         } catch (_: Exception) {
             // Silently skip if pkexec is unavailable or resolution fails;
             // HostsBlocker remains the primary Linux blocking layer.
+        }
+    }
+
+    // ── Linux helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Parse /proc/[pid]/net/tcp or tcp6 and return remote IPs of ESTABLISHED
+     * connections (state byte 01).  Loopback and unroutable addresses skipped.
+     */
+    private fun parseLinuxProcNetTcp(pid: Long, proto: String): Set<String> {
+        return try {
+            val f = java.io.File("/proc/$pid/net/$proto")
+            if (!f.canRead()) return emptySet()
+            f.readLines().drop(1)   // skip header
+                .mapNotNull { line ->
+                    val cols = line.trim().split(Regex("\\s+"))
+                    if (cols.size < 4) return@mapNotNull null
+                    if (cols[3] != "01") return@mapNotNull null    // ESTABLISHED only
+                    val remoteHex = cols[2].split(":").firstOrNull() ?: return@mapNotNull null
+                    if (proto == "tcp6") parseHexIpv6(remoteHex)
+                    else                 parseHexIpv4(remoteHex)
+                }
+                .filterNot {
+                    it.startsWith("127.") || it.startsWith("10.") ||
+                    it.startsWith("192.168.") || it == "0.0.0.0" || it == "::1"
+                }
+                .toSet()
+        } catch (_: Exception) { emptySet() }
+    }
+
+    /** Little-endian 8-char hex → dotted-decimal IPv4 (e.g. "0101A8C0" → "192.168.1.1"). */
+    private fun parseHexIpv4(hex: String): String? {
+        if (hex.length != 8) return null
+        return try {
+            val v = hex.toLong(16)
+            "${v and 0xFF}.${v shr 8 and 0xFF}.${v shr 16 and 0xFF}.${v shr 24 and 0xFF}"
+        } catch (_: Exception) { null }
+    }
+
+    /** Little-endian 32-char hex → abbreviated IPv6 string (best-effort). */
+    private fun parseHexIpv6(hex: String): String? {
+        if (hex.length != 32) return null
+        return try {
+            // /proc/net/tcp6 stores each 4-byte word in host (little-endian) byte order
+            (0 until 8).joinToString(":") { i ->
+                val word = hex.substring(i * 4, i * 4 + 4).toInt(16)
+                val swapped = ((word and 0xFF) shl 8) or ((word shr 8) and 0xFF)
+                swapped.toString(16)
+            }
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * Run: (pkexec iptables | iptables) [op] OUTPUT -d [ip] -j REJECT
+     *      -m comment --comment "focusflow-[tag]"
+     * [op] is "-A" (append/add) or "-D" (delete).
+     * Tries pkexec first; falls back to plain iptables (succeeds when already root).
+     */
+    private fun linuxIptablesExec(op: String, ip: String, tag: String) {
+        val ruleArgs = arrayOf(
+            op, "OUTPUT", "-d", ip, "-j", "REJECT",
+            "-m", "comment", "--comment", "$IPTABLES_TAG-$tag"
+        )
+        for (prefix in listOf(arrayOf("pkexec", "iptables"), arrayOf("iptables"))) {
+            try {
+                val proc = Runtime.getRuntime().exec(prefix + ruleArgs)
+                if (proc.waitFor() == 0) return
+            } catch (_: Exception) {}
         }
     }
 
@@ -206,8 +315,14 @@ object NetworkBlocker {
      */
     fun removeRule(processName: String) {
         if (isLinux) {
-            activeRules.remove(processName.lowercase())
-            pendingRules.remove(processName.lowercase())
+            val lower = processName.lowercase()
+            activeRules.remove(lower)
+            pendingRules.remove(lower)
+            // Remove the actual iptables rules we inserted for this process
+            Thread({
+                val ips = linuxBlockedIps.remove(lower) ?: return@Thread
+                for (ip in ips) linuxIptablesExec("-D", ip, lower)
+            }, "FocusFlow-LinuxNetUnblock-$lower").also { it.isDaemon = true }.start()
             return
         }
         if (!isWindows) return
@@ -225,8 +340,15 @@ object NetworkBlocker {
      */
     fun removeAllRules() {
         if (isLinux) {
+            val snapshot = linuxBlockedIps.entries.map { it.key to it.value.toSet() }
             activeRules.clear()
             pendingRules.clear()
+            linuxBlockedIps.clear()
+            Thread({
+                for ((tag, ips) in snapshot) {
+                    for (ip in ips) linuxIptablesExec("-D", ip, tag)
+                }
+            }, "FocusFlow-LinuxNetFlush").also { it.isDaemon = true }.start()
             return
         }
         if (!isWindows) return
@@ -247,7 +369,28 @@ object NetworkBlocker {
      * previous session are recognised without being re-applied.
      */
     fun syncFromFirewall() {
-        if (isLinux) return  // Linux: no persistent iptables sync, rules are in-memory
+        if (isLinux) {
+            // Re-read existing focusflow-tagged iptables OUTPUT rules and
+            // populate activeRules so a restarted session recognises prior blocks.
+            try {
+                val proc = Runtime.getRuntime().exec(
+                    arrayOf("iptables", "-L", "OUTPUT", "-n")
+                )
+                val output = proc.inputStream.bufferedReader().readText()
+                proc.waitFor()
+                val prefix = "$IPTABLES_TAG-"
+                output.lineSequence()
+                    .filter { it.contains(prefix) }
+                    .forEach { line ->
+                        val tag = line.substringAfter(prefix)
+                            .trim()
+                            .takeWhile { it != ' ' && it != '"' }
+                            .lowercase()
+                        if (tag.isNotBlank()) activeRules.add(tag)
+                    }
+            } catch (_: Exception) {}
+            return
+        }
         if (!isWindows || !isRunningAsAdmin()) return
         val output = runPowerShellAndRead("""
             Get-NetFirewallRule |

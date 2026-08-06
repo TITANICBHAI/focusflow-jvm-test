@@ -1,7 +1,9 @@
 package com.focusflow.enforcement
 
 import com.sun.jna.Native
+import com.sun.jna.NativeLong
 import com.sun.jna.Pointer
+import com.sun.jna.platform.unix.X11 as JnaX11
 import com.sun.jna.platform.win32.Kernel32
 import com.sun.jna.platform.win32.User32
 import com.sun.jna.platform.win32.WinDef.LRESULT
@@ -124,8 +126,15 @@ object GlobalKeyboardHook {
     @Volatile private var win32ThreadId: Int      = 0
     private var pumpThread: Thread? = null
 
+    // ── Linux X11 keyboard grab state ─────────────────────────────────────────
+    // XGrabKeyboard intercepts ALL keyboard input at the X server level, so no
+    // shortcut (Alt+Tab, Super, Ctrl+Esc) escapes the kiosk overlay.
+    // Only active when DISPLAY is set (X11 session); no-ops silently on Wayland.
+    @Volatile private var x11Display:   JnaX11.Display? = null
+    @Volatile private var x11GrabActive: Boolean = false
+
     /** True while the hook is installed and active. */
-    val isActive: Boolean get() = hookHandle != null
+    val isActive: Boolean get() = hookHandle != null || x11GrabActive
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -143,6 +152,7 @@ object GlobalKeyboardHook {
         // TODO: If xdg-desktop-portal or kiosk-shell is available, integrate
         //       session-level keyboard lock (xprop + EWMH client list filtering).
         if (isLinux) {
+            enableLinuxX11Hook()   // XGrabKeyboard on X11; no-op on Wayland
             running = true
             return
         }
@@ -217,6 +227,10 @@ object GlobalKeyboardHook {
     @Synchronized fun disable() {
         if (!running) return
         running = false
+        if (isLinux) {
+            disableLinuxX11Hook()
+            return
+        }
         // Brief spin-wait for the pump thread to register its Win32 thread ID.
         // A rapid enable → disable sequence (e.g. KillSwitch activate immediately
         // followed by deactivate) can reach here before pumpThread has had a chance
@@ -237,6 +251,65 @@ object GlobalKeyboardHook {
         pumpThread?.join(1_500)
         pumpThread    = null
         win32ThreadId = 0
+    }
+
+    // ── Linux X11 keyboard grab ───────────────────────────────────────────────
+
+    /**
+     * Grabs the entire keyboard at the X server level via XGrabKeyboard.
+     *
+     * With ownerEvents=true our own Compose window still receives its key events
+     * normally; all keystrokes that would reach other windows (Alt+Tab to the
+     * compositor, Super to the panel, etc.) are redirected to us and discarded
+     * because we never forward them.
+     *
+     * Only called when DISPLAY is set (X11 session).  On Wayland (no DISPLAY,
+     * or XWayland without a proper root-grab path) this is a silent no-op;
+     * the fullscreen Compose overlay remains the only mitigation there.
+     */
+    private fun enableLinuxX11Hook() {
+        val displayEnv = System.getenv("DISPLAY")
+        if (displayEnv.isNullOrBlank()) return   // Wayland / headless — skip
+        try {
+            val x11  = JnaX11.INSTANCE
+            val disp = x11.XOpenDisplay(displayEnv) ?: return
+            val root = x11.XDefaultRootWindow(disp)
+            val rc   = x11.XGrabKeyboard(
+                disp, root,
+                /* ownerEvents  = */ 1,              // True: our windows still receive events normally
+                /* pointerMode  = */ JnaX11.GrabModeAsync,
+                /* keyboardMode = */ JnaX11.GrabModeAsync,
+                /* time         = */ NativeLong(0L)  // CurrentTime
+            )
+            x11.XFlush(disp)
+            if (rc == JnaX11.GrabSuccess) {
+                x11Display    = disp
+                x11GrabActive = true
+            } else {
+                // AlreadyGrabbed (1) or other failure — release and fall through
+                x11.XCloseDisplay(disp)
+            }
+        } catch (_: Throwable) {
+            // libX11 not found, display not accessible, or grab failed — silent
+        }
+    }
+
+    /**
+     * Releases the X11 keyboard grab and closes the display connection.
+     * Safe to call when no grab is active.
+     */
+    private fun disableLinuxX11Hook() {
+        val disp = x11Display ?: return
+        try {
+            val x11 = JnaX11.INSTANCE
+            if (x11GrabActive) {
+                x11.XUngrabKeyboard(disp, NativeLong(0L))
+                x11GrabActive = false
+            }
+            x11.XFlush(disp)
+            x11.XCloseDisplay(disp)
+        } catch (_: Throwable) {}
+        x11Display = null
     }
 
     // ── Suppression decision ──────────────────────────────────────────────────
